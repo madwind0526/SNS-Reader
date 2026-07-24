@@ -1,0 +1,18 @@
+# Cache
+
+## Active Findings
+
+- Web file picker imports cannot rely on local absolute file paths. For large archive imports, stream the selected `File` body to a temporary server-side zip and pass that temp path to existing import scripts.
+- Archive import should validate both filename hints and archive structure. Filename mismatch is useful as a non-blocking UI warning, while internal zip structure mismatch should be a blocking server-side error before running importer scripts.
+- Naver Blog latest-post import can use RSS for the newest item and `m.blog.naver.com/{blogId}/{logNo}` for full `se-main-container` body extraction. The generated Markdown should be validated by reading with Node/UTF-8 because PowerShell `Get-Content` may display Korean as mojibake.
+- Naver Blog all-post discovery works through `PostTitleListAsync.naver?blogId={blogId}&currentPage={n}&categoryNo=0&countPerPage=30`; the response includes `logNo`, `categoryNo`, `addDate`, `totalCount`, and can be deduplicated by `logNo`.
+- Naver Blog paragraph extraction should join captured editor paragraphs with blank Markdown lines, not single newlines, because Naver uses visual paragraph spacing and zero-width blank paragraphs that otherwise make imported posts look incomplete or overly compressed.
+- Generated Markdown section parsing must stop only at known app-owned sections (`Date`, `Body`, `Images`, `Videos`, `Comments`, `Summary`, `Source`). Stopping at any `##` heading truncates user-authored Markdown bodies such as Naver Blog posts with `## 1단계`.
+- Old Naver Blog posts may store body text inside `post_ct` / `postViewArea` as raw `<FONT>...<BR>...</FONT>` without `<p>` tags. The crawler needs a fallback that converts `<BR>` to Markdown line breaks and strips remaining tags.
+- Naver Blog public all-post list uses `categoryNo=0` like the UI's 전체보기, but unauthenticated totals can differ from the owner UI count; public API showed 4,896 while the logged-in sidebar showed 7,642, likely due to private/hidden/memo content.
+- Naver Blog blocked scraped posts can contain only `스크랩된 글은 재스크랩이 불가능합니다`; these should be skipped before Markdown writing and removed from existing generated output.
+- Naver Blog image-only posts should not be archived as SNS Reader text cards. Treat `has_images: true` with placeholder/empty body as image-only cleanup candidates, delete the matching Markdown plus its `media_folder`, and skip future imports before image download/write.
+- Large Naver Blog crawls can fail on one transient post/image `fetch failed`; import should catch per-post body fetch errors and image fetch errors, skip only the failing item, and keep the batch running.
+- Sidebar Update should execute only SNS accounts with `exportToObsidian !== false`. Naver Blog can run date-range update from the latest converted Markdown date, Facebook can run only when `FACEBOOK_ACCESS_TOKEN` is configured, and YouTube Community can attempt public HTML but may return a logged-out unavailable page.
+- Instagram and Threads archive import is reliable for bulk imports, but incremental update needs a logged-in browser connector because public pages do not expose stable post body/media or thread continuation/reply data.
+- Naver Blog MemoLog uses `MemologPostList.naver` and `MemologPostView.naver`, not `PostTitleListAsync.naver`; list pages repeat the final page after the real end, so discovery must stop when no new `logNo` appears.

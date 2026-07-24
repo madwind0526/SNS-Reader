@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-electron/
+release/
+.vite/
+*.log
+dev-server.log
+dev-server.err
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+exports/*
+!exports/.gitkeep
+data/runtime/
+data/credentials/
