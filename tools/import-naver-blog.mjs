@@ -407,6 +407,45 @@ async function copyPostImages(imageUrls, mediaDir) {
   return copiedImages;
 }
 
+async function walkMarkdownFiles(root, files = []) {
+  if (!existsSync(root)) {
+    return files;
+  }
+
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith("_")) {
+        continue;
+      }
+
+      await walkMarkdownFiles(fullPath, files);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+async function readExistingPostIds(root) {
+  const files = await walkMarkdownFiles(root);
+  const ids = new Set();
+
+  for (const filePath of files) {
+    const markdown = await readFile(filePath, "utf8").catch(() => "");
+    const platform = markdown.match(/^platform:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const postId = markdown.match(/^post_id:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+
+    if (platform === "naver-blog" && postId) {
+      ids.add(postId);
+    }
+  }
+
+  return ids;
+}
+
 async function fetchTitleListPage(blogId, page, countPerPage = 30) {
   const params = new URLSearchParams({
     blogId,
@@ -584,6 +623,8 @@ async function main() {
   const pageTo = args["page-to"] ? Number(args["page-to"]) : 0;
   const pageDelayMs = args["page-delay-ms"] ? Number(args["page-delay-ms"]) : 400;
   const postDelayMs = args["post-delay-ms"] ? Number(args["post-delay-ms"]) : 300;
+  const existingPostIds = await readExistingPostIds(path.join(outputRoot, "Naver Blog"));
+  let skippedDuplicates = 0;
   const rssItems =
     dateFrom || dateTo
       ? await discoverDateRangePosts({ blogId, dateFrom, dateTo, limit, pageFrom, pageTo, pageDelayMs })
@@ -593,6 +634,12 @@ async function main() {
   const written = [];
 
   for (const item of rssItems) {
+    if (existingPostIds.has(item.logNo)) {
+      skippedDuplicates += 1;
+      console.log(`Skipping duplicate Naver Blog post: ${item.logNo} ${item.title}`);
+      continue;
+    }
+
     console.log(`Importing ${written.length + 1}/${rssItems.length}: ${item.pubDate} ${item.title}`);
     let postHtml;
 
@@ -656,6 +703,7 @@ async function main() {
     );
 
     written.push(mdPath);
+    existingPostIds.add(item.logNo);
 
     if (postDelayMs) {
       await sleep(postDelayMs);
@@ -668,6 +716,7 @@ async function main() {
   }
   console.log(`Discovered posts: ${rssItems.length}`);
   console.log(`Written Markdown files: ${written.length}`);
+  console.log(`Skipped duplicate posts: ${skippedDuplicates}`);
   console.log(`Output folder: ${path.join(outputRoot, "Naver Blog")}`);
   written.forEach((filePath) => console.log(filePath));
 }
