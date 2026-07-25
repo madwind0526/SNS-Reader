@@ -54,6 +54,8 @@ interface CardFilters {
   platforms: SnsPlatform[];
   dateFrom: string;
   dateTo: string;
+  connectionMin: number;
+  connectionMax: number;
   commentAuthor: string;
   tagText: string;
 }
@@ -237,9 +239,44 @@ const emptyCardFilters: CardFilters = {
   platforms: [],
   dateFrom: "",
   dateTo: "",
+  connectionMin: 0,
+  connectionMax: 0,
   commentAuthor: "",
   tagText: ""
 };
+
+const genericMeshTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
+
+function getSemanticTags(post: ConvertedPost) {
+  return Array.from(new Set(post.tags
+    .map((tag) => tag.replace(/^#/, "").trim())
+    .filter((tag) => tag && !genericMeshTags.has(tag.toLowerCase()))));
+}
+
+function buildConnectionCounts(posts: ConvertedPost[]) {
+  const connectedPostIds = new Map<string, Set<string>>();
+  const postsByTag = new Map<string, string[]>();
+
+  posts.forEach((post) => {
+    connectedPostIds.set(post.id, new Set());
+
+    getSemanticTags(post).forEach((tag) => {
+      const existingPosts = postsByTag.get(tag) ?? [];
+      postsByTag.set(tag, [...existingPosts, post.id]);
+    });
+  });
+
+  postsByTag.forEach((postIds) => {
+    for (let leftIndex = 0; leftIndex < postIds.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < postIds.length; rightIndex += 1) {
+        connectedPostIds.get(postIds[leftIndex])?.add(postIds[rightIndex]);
+        connectedPostIds.get(postIds[rightIndex])?.add(postIds[leftIndex]);
+      }
+    }
+  });
+
+  return new Map(Array.from(connectedPostIds.entries()).map(([postId, connectedIds]) => [postId, connectedIds.size]));
+}
 
 function splitCommaTerms(value: string) {
   return value
@@ -654,12 +691,20 @@ export function App() {
     });
   }, [activeAccount, convertedPosts]);
 
+  const connectionCounts = useMemo(() => buildConnectionCounts(querySourcePosts), [querySourcePosts]);
+  const maxConnectionCount = useMemo(
+    () => Math.max(0, ...Array.from(connectionCounts.values())),
+    [connectionCounts]
+  );
+
   const visiblePosts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
     return querySourcePosts.filter((post) => {
       const commentAuthorTerms = splitCommaTerms(cardFilters.commentAuthor);
       const tagTerms = splitCommaTerms(cardFilters.tagText);
+      const connectionCount = connectionCounts.get(post.id) ?? 0;
+      const connectionMax = cardFilters.connectionMax > 0 ? cardFilters.connectionMax : Number.POSITIVE_INFINITY;
       const filterMatches =
         (!cardFilters.imagesOnly || post.imageCount > 0) &&
         (!cardFilters.commentsOnly || post.commentCount > 0) &&
@@ -667,6 +712,8 @@ export function App() {
         (cardFilters.platforms.length === 0 || cardFilters.platforms.includes(post.platform)) &&
         (!cardFilters.dateFrom || post.dateIso >= cardFilters.dateFrom) &&
         (!cardFilters.dateTo || post.dateIso <= cardFilters.dateTo) &&
+        connectionCount >= cardFilters.connectionMin &&
+        connectionCount <= connectionMax &&
         (commentAuthorTerms.length === 0 ||
           commentAuthorTerms.some((term) =>
             post.commentAuthors.some((author) => author.toLowerCase().includes(term))
@@ -681,7 +728,7 @@ export function App() {
 
       return filterMatches && queryMatches;
     });
-  }, [cardFilters, query, querySourcePosts]);
+  }, [cardFilters, connectionCounts, query, querySourcePosts]);
 
   const sidebarItems = useMemo(() => {
     const totalCount = convertedPosts.length;
@@ -720,6 +767,8 @@ export function App() {
     cardFilters.commentsOnly ||
     cardFilters.tagsOnly ||
     cardFilters.platforms.length > 0 ||
+    cardFilters.connectionMin > 0 ||
+    cardFilters.connectionMax > 0 ||
     Boolean(cardFilters.dateFrom || cardFilters.dateTo || cardFilters.commentAuthor.trim() || cardFilters.tagText.trim());
   const hasActiveLlmQuery = Boolean(llmQuestion.trim() || llmResult);
 
@@ -1280,6 +1329,7 @@ export function App() {
 
       {sidebarModalMode === "filter" && (
         <FilterPanelModal
+          connectionMax={maxConnectionCount}
           filters={cardFilters}
           platformOptions={filterPlatformOptions}
           onApply={(nextFilters) => {
@@ -1652,14 +1702,11 @@ function ConvertedFileLibrary({
 
 function MeshView({ posts }: { posts: ConvertedPost[] }) {
   const mesh = useMemo(() => {
-    const genericTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
     const postTagMap = new Map<string, string[]>();
     const tagCounts = new Map<string, number>();
 
     posts.forEach((post) => {
-      const normalizedTags = Array.from(new Set(post.tags
-        .map((tag) => tag.replace(/^#/, "").trim())
-        .filter((tag) => tag && !genericTags.has(tag.toLowerCase()))));
+      const normalizedTags = getSemanticTags(post);
 
       if (normalizedTags.length === 0) {
         return;
@@ -1680,6 +1727,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       .slice(0, 90);
     const postPositions = new Map<string, { x: number; y: number }>();
     const edges: Array<{ from: string; to: string; sharedTags: string[]; weight: number }> = [];
+    const postDegrees = new Map<string, number>();
     const centerX = 500;
     const centerY = 310;
 
@@ -1710,14 +1758,17 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
           sharedTags,
           weight: sharedTags.length
         });
+        postDegrees.set(leftPost.id, (postDegrees.get(leftPost.id) ?? 0) + 1);
+        postDegrees.set(rightPost.id, (postDegrees.get(rightPost.id) ?? 0) + 1);
       }
     }
 
     const visibleEdges = edges
       .sort((left, right) => right.weight - left.weight || left.from.localeCompare(right.from))
       .slice(0, 260);
+    const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
 
-    return { linkedPosts, postPositions, topTags, visibleEdges };
+    return { linkedPosts, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
   }, [posts]);
 
   return (
@@ -1771,14 +1822,30 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
 
                 return (
                   <g className={"mesh-post-node platform-" + post.platform} key={post.id}>
-                    <circle cx={position.x} cy={position.y} r={post.imageCount > 0 ? 8 : 6} />
-                    <title>{(post.title || "Untitled Post") + "\n" + post.date}</title>
+                    <circle
+                      cx={position.x}
+                      cy={position.y}
+                      r={5 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 13}
+                    />
+                    <title>{(post.title || "Untitled Post") + "\n" + post.date + "\nConnections: " + (mesh.postDegrees.get(post.id) ?? 0)}</title>
                   </g>
                 );
               })}
             </svg>
           )}
         </div>
+
+        <aside className="mesh-side-panel">
+          <h2>Top TAG</h2>
+          <div className="mesh-tag-list">
+            {mesh.topTags.map(([tag, count]) => (
+              <div className="mesh-tag-item" key={tag}>
+                <span>{tag}</span>
+                <strong>{count}</strong>
+              </div>
+            ))}
+          </div>
+        </aside>
       </div>
     </section>
   );
@@ -2976,12 +3043,14 @@ function SearchPanelModal({
 }
 
 function FilterPanelModal({
+  connectionMax,
   filters,
   platformOptions,
   onApply,
   onClear,
   onClose
 }: {
+  connectionMax: number;
   filters: CardFilters;
   platformOptions: Array<{ platform: SnsPlatform; label: string }>;
   onApply: (filters: CardFilters) => void;
@@ -2990,6 +3059,9 @@ function FilterPanelModal({
 }) {
   const [draftFilters, setDraftFilters] = useState<CardFilters>(filters);
   const [dateError, setDateError] = useState("");
+  const rangeMax = Math.max(1, connectionMax);
+  const connectionMin = Math.min(draftFilters.connectionMin, rangeMax);
+  const connectionUpper = draftFilters.connectionMax > 0 ? Math.min(draftFilters.connectionMax, rangeMax) : rangeMax;
 
   const updateDraft = <Key extends keyof CardFilters>(key: Key, value: CardFilters[Key]) => {
     if (key === "dateFrom" || key === "dateTo") {
@@ -3000,6 +3072,28 @@ function FilterPanelModal({
       ...current,
       [key]: value
     }));
+  };
+
+  const updateConnectionMin = (value: number) => {
+    setDraftFilters((current) => {
+      const nextMin = Math.min(value, current.connectionMax > 0 ? current.connectionMax : rangeMax);
+
+      return {
+        ...current,
+        connectionMin: nextMin
+      };
+    });
+  };
+
+  const updateConnectionMax = (value: number) => {
+    setDraftFilters((current) => {
+      const nextMax = Math.max(value, current.connectionMin);
+
+      return {
+        ...current,
+        connectionMax: nextMax >= rangeMax ? 0 : nextMax
+      };
+    });
   };
 
   const togglePlatformFilter = (platform: SnsPlatform, checked: boolean) => {
@@ -3024,6 +3118,8 @@ function FilterPanelModal({
 
     onApply({
       ...draftFilters,
+      connectionMin,
+      connectionMax: connectionUpper >= rangeMax ? 0 : connectionUpper,
       commentAuthor: draftFilters.commentAuthor.trim(),
       tagText: draftFilters.tagText.trim()
     });
@@ -3116,6 +3212,39 @@ function FilterPanelModal({
                 />
                 With Comments
               </label>
+            </div>
+          </div>
+          <div className="filter-section">
+            <span>Connection</span>
+            <div className="range-filter">
+              <div className="range-values">
+                <strong>{connectionMin}</strong>
+                <span>{connectionUpper}</span>
+              </div>
+              <div className="dual-range">
+                <input
+                  aria-label="Minimum connection"
+                  max={rangeMax}
+                  min={0}
+                  onChange={(event) => updateConnectionMin(Number(event.target.value))}
+                  onInput={(event) => updateConnectionMin(Number(event.currentTarget.value))}
+                  type="range"
+                  value={connectionMin}
+                />
+                <input
+                  aria-label="Maximum connection"
+                  max={rangeMax}
+                  min={0}
+                  onChange={(event) => updateConnectionMax(Number(event.target.value))}
+                  onInput={(event) => updateConnectionMax(Number(event.currentTarget.value))}
+                  type="range"
+                  value={connectionUpper}
+                />
+              </div>
+              <div className="range-scale">
+                <span>0</span>
+                <span>Max {connectionMax}</span>
+              </div>
             </div>
           </div>
           <div className="filter-section">

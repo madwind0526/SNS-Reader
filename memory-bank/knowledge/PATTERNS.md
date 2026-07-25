@@ -73,5 +73,6 @@ Reusable implementation patterns for this project will be accumulated here.
 - PDF preview UI should render the selected page in a non-scrolled right pane with `object-fit: contain` and fixed inset padding, while the left page navigator remains independently scrollable.
 - PDF page-count split should create full book volumes after estimating physical pages, then merge a final remainder under the configured minimum page threshold into the previous volume.
 - App Mesh View can reuse parsed Markdown card tags directly. For a less cluttered main-window graph, compute top non-platform tags only as a filter, render post nodes only, and connect post pairs that share one or more visible tags.
+- Mesh View node size should scale by post connection degree, while the right Top TAG panel can remain as a textual summary. Card Filter can reuse the same non-platform TAG connection count as a min/max range filter.
 - LLM enrichment should support `--year`, `--date-from`, `--date-to`, and `--limit` so large local-model runs can be resumed and diagnosed by batch.
 - Word Cloud layout should measure each label before placement, cap long labels relative to the fixed panel width, place labels by spiral search, and skip only labels that cannot be placed inside bounds.
