@@ -1,4 +1,4 @@
-import type { AppSettings, ExportField, SnsPlatform } from "../types/domain";
+﻿import type { AppSettings, ExportField, PdfStyleTarget, PdfTextStyle, SnsPlatform } from "../types/domain";
 
 export const SETTINGS_STORAGE_KEY = "sns-reader.settings.v2";
 
@@ -19,6 +19,25 @@ export const fieldLabels: Record<ExportField, string> = {
   tags: "Tags"
 };
 
+const defaultPdfTextStyle: PdfTextStyle = {
+  fontFamily: "Malgun Gothic",
+  fontSize: 9.5,
+  color: "#222222",
+  bold: false,
+  italic: false,
+  underline: false,
+  lineHeight: 1.2
+};
+
+export const pdfStyleLabels: Record<PdfStyleTarget, string> = {
+  title: "제목",
+  date: "날짜",
+  body: "본문",
+  comments: "댓글",
+  summary: "요약",
+  tags: "TAG"
+};
+
 export const defaultSettings: AppSettings = {
   theme: "light",
   ownerUrl: "",
@@ -29,10 +48,21 @@ export const defaultSettings: AppSettings = {
   optionalFields: ["images", "summary", "tags"],
   pdfFields: ["comments", "images", "summary", "tags"],
   pdfSplitMode: "year",
-  pdfYear: "2026",
-  pdfDateFrom: "2026-01-01",
-  pdfDateTo: "2026-12-31",
-  pdfPageCount: 200,
+  pdfYear: "",
+  pdfDateFrom: "",
+  pdfDateTo: "",
+  pdfPageCount: 0,
+  pdfPageOrientation: "portrait",
+  pdfTextColumnCount: 2,
+  pdfCoverImagePath: "assets\\heart-food-journal-cover.jpeg",
+  pdfStyles: {
+    title: { ...defaultPdfTextStyle, fontSize: 16, color: "#111111", bold: true, lineHeight: 1.18 },
+    date: { ...defaultPdfTextStyle, fontSize: 8, color: "#666666", lineHeight: 1.05 },
+    body: { ...defaultPdfTextStyle, fontSize: 9.5, color: "#222222", lineHeight: 1.18 },
+    comments: { ...defaultPdfTextStyle, fontSize: 8.5, color: "#555555", lineHeight: 1.15 },
+    summary: { ...defaultPdfTextStyle, fontSize: 8.8, color: "#333333", italic: true, lineHeight: 1.16 },
+    tags: { ...defaultPdfTextStyle, fontSize: 8.5, color: "#1f6f68", bold: true, lineHeight: 1.12 }
+  },
   imageLayout: "collage",
   selectedLlmProvider: "openai-frontier",
   maxTags: 10,
@@ -80,3 +110,4 @@ export const defaultSettings: AppSettings = {
     }
   ]
 };
+

@@ -6,9 +6,12 @@ import {
   Facebook,
   FileText,
   FolderOpen,
+  GitBranch,
   Instagram,
   KeyRound,
   ListFilter,
+  Maximize2,
+  Minimize2,
   Moon,
   Pencil,
   Plus,
@@ -27,14 +30,14 @@ import {
   X,
   Youtube
 } from "lucide-react";
-import type { Dispatch, ReactNode, SetStateAction } from "react";
+import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { defaultSettings, fieldLabels, platformLabels } from "./settings/defaults";
+import { defaultSettings, fieldLabels, pdfStyleLabels, platformLabels } from "./settings/defaults";
 import { getAvailableLlmProviders, getPreferredLlmProvider } from "./settings/llm";
 import { clearSettings, loadSettings, loadSettingsFile, saveSettings } from "./settings/storage";
-import type { AppSettings, ExportField, LlmProviderOption, SnsAccountConfig, SnsPlatform } from "./types/domain";
+import type { AppSettings, ExportField, LlmProviderOption, PdfStyleTarget, PdfTextStyle, SnsAccountConfig, SnsPlatform } from "./types/domain";
 
-type ViewMode = "sns-read" | "pdf-write" | "settings";
+type ViewMode = "sns-read" | "pdf-write" | "settings" | "mesh-view";
 type AccountFilter = "total" | string;
 type PdfModalMode = "viewer" | "creator" | null;
 type ConfirmModalMode = "reset" | null;
@@ -92,7 +95,10 @@ interface PdfBook {
   dateRange: string;
   pageCount: number;
   filePath: string;
+  url?: string;
+  coverUrl?: string;
   createdAt: string;
+  postCount?: number;
 }
 
 interface LlmQueryResult {
@@ -369,6 +375,30 @@ function getProviderDisplayName(provider: LlmProviderOption, envValues: LlmEnvVa
   return `${provider.label} - ${getProviderDisplayModel(provider, envValues)}`;
 }
 
+function getReadablePreviewColor(color: string, theme: AppSettings["theme"]) {
+  const match = String(color || "").match(/^#?([0-9a-f]{6})$/i);
+
+  if (!match) {
+    return theme === "dark" ? "#f3f1ea" : "#202124";
+  }
+
+  const hex = match[1];
+  const red = Number.parseInt(hex.slice(0, 2), 16) / 255;
+  const green = Number.parseInt(hex.slice(2, 4), 16) / 255;
+  const blue = Number.parseInt(hex.slice(4, 6), 16) / 255;
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+
+  if (theme === "dark" && luminance < 0.36) {
+    return "#f3f1ea";
+  }
+
+  if (theme === "light" && luminance > 0.78) {
+    return "#202124";
+  }
+
+  return color;
+}
+
 function detectPlatformFromArchiveName(fileName: string): SnsPlatform | null {
   const lowerName = fileName.toLowerCase();
 
@@ -413,6 +443,7 @@ export function App() {
   const [llmEnvValues, setLlmEnvValues] = useState<LlmEnvValues>({});
   const [editingLlmProvider, setEditingLlmProvider] = useState<LlmProviderOption | null>(null);
   const [convertedPosts, setConvertedPosts] = useState<ConvertedPost[]>([]);
+  const [pdfBooks, setPdfBooks] = useState<PdfBook[]>([]);
   const [selectedPost, setSelectedPost] = useState<ConvertedPost | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<ConvertedPost | null>(null);
@@ -420,6 +451,7 @@ export function App() {
   const [isImportingArchive, setIsImportingArchive] = useState(false);
   const [isEnrichingMarkdown, setIsEnrichingMarkdown] = useState(false);
   const [isUpdatingSns, setIsUpdatingSns] = useState(false);
+  const [isCreatingPdf, setIsCreatingPdf] = useState(false);
   const [saveStatus, setSaveStatus] = useState("No changes saved in this session.");
   const [systemMessage, setSystemMessage] = useState("Ready. Waiting for SNS conversion tasks.");
   const llmProviders = useMemo(() => getAvailableLlmProviders(), []);
@@ -478,6 +510,31 @@ export function App() {
     } catch {
       setLlmEnvStatus({});
       setLlmEnvValues({});
+    }
+  };
+
+  const refreshPdfBooks = async ({ silent = false } = {}) => {
+    try {
+      const response = await fetch(`/api/pdf-books?ts=${Date.now()}`, {
+        cache: "no-store"
+      });
+
+      if (!response.ok) {
+        throw new Error(`PDF scan failed with ${response.status}`);
+      }
+
+      const payload = (await response.json()) as { books?: PdfBook[]; root?: string };
+      const books = payload.books ?? [];
+
+      setPdfBooks(books);
+      if (!silent) {
+        setSystemMessage(`Loaded ${books.length} PDF files from ${payload.root ?? "PDF folder"}.`);
+      }
+    } catch (error) {
+      setPdfBooks([]);
+      if (!silent) {
+        setSystemMessage(error instanceof Error ? error.message : "PDF scan failed.");
+      }
     }
   };
 
@@ -549,6 +606,7 @@ export function App() {
 
       if (mounted) {
         await refreshConvertedPosts();
+        await refreshPdfBooks({ silent: true });
         await refreshLlmEnvStatus();
       }
     };
@@ -688,6 +746,21 @@ export function App() {
     });
     setSaveStatus("Unsaved changes.");
     setSystemMessage("Field options updated.");
+  };
+
+  const updatePdfStyle = <Key extends keyof PdfTextStyle>(target: PdfStyleTarget, key: Key, value: PdfTextStyle[Key]) => {
+    setSettings((current) => ({
+      ...current,
+      pdfStyles: {
+        ...current.pdfStyles,
+        [target]: {
+          ...current.pdfStyles[target],
+          [key]: value
+        }
+      }
+    }));
+    setSaveStatus("Unsaved changes.");
+    setSystemMessage("PDF style updated.");
   };
 
   const handleSave = () => {
@@ -838,7 +911,44 @@ export function App() {
 
   const openView = (nextView: ViewMode, message: string) => {
     setView(nextView);
+    if (nextView === "pdf-write") {
+      void refreshPdfBooks({ silent: true });
+    }
     setSystemMessage(message);
+  };
+
+  const createPdfBook = async () => {
+    if (isCreatingPdf) {
+      return;
+    }
+
+    setIsCreatingPdf(true);
+    setSystemMessage("PDF 생성 중입니다. Markdown, 이미지, 요약 정보를 책 형식으로 배치하고 있습니다...");
+
+    try {
+      const response = await fetch("/api/create-pdf", {
+        body: JSON.stringify({ settings }),
+        headers: {
+          "Content-Type": "application/json"
+        },
+        method: "POST"
+      });
+      const payload = (await response.json()) as { book?: PdfBook; books?: PdfBook[]; message?: string; error?: string };
+
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || `PDF creation failed with ${response.status}`);
+      }
+
+      await refreshPdfBooks({ silent: true });
+      const createdBook = payload.books?.[0] ?? payload.book ?? null;
+      setSelectedPdf(createdBook);
+      setPdfModalMode(createdBook ? "viewer" : null);
+      setSystemMessage(payload.message || "PDF 생성이 완료되었습니다.");
+    } catch (error) {
+      setSystemMessage(error instanceof Error ? error.message : "PDF 생성에 실패했습니다.");
+    } finally {
+      setIsCreatingPdf(false);
+    }
   };
 
   const runSnsRead = async () => {
@@ -1062,19 +1172,21 @@ export function App() {
 
         {view === "pdf-write" && (
           <PdfWriteView
-            pdfBooks={samplePdfBooks}
+            pdfBooks={pdfBooks}
             onCreate={() => {
               setPdfModalMode("creator");
               setSelectedPdf(null);
-              setSystemMessage("PDF creation settings opened.");
+              setSystemMessage("PDF 생성 설정을 열었습니다.");
             }}
             onOpenPdf={(pdf) => {
               setSelectedPdf(pdf);
               setPdfModalMode("viewer");
-              setSystemMessage(`${pdf.title} opened in preview.`);
+              setSystemMessage(`${pdf.title} 미리보기를 열었습니다.`);
             }}
           />
         )}
+
+        {view === "mesh-view" && <MeshView posts={visiblePosts} />}
 
         {view === "settings" && (
           <SettingsView
@@ -1124,9 +1236,12 @@ export function App() {
 
       {pdfModalMode === "creator" && (
         <PdfCreatorModal
+          creating={isCreatingPdf}
           settings={settings}
           toggleField={toggleField}
+          updatePdfStyle={updatePdfStyle}
           updateSettings={updateSettings}
+          onCreate={createPdfBook}
           onClose={() => setPdfModalMode(null)}
         />
       )}
@@ -1422,6 +1537,14 @@ function TopToolbar({
           <FileText size={20} />
         </button>
         <button
+          className={view === "mesh-view" ? "icon-button active" : "icon-button"}
+          onClick={() => onViewChange("mesh-view", "Mesh view opened.")}
+          title="Mesh View"
+          type="button"
+        >
+          <GitBranch size={20} />
+        </button>
+        <button
           className={view === "settings" ? "icon-button active" : "icon-button"}
           onClick={() => onViewChange("settings", "Settings view opened.")}
           title="Setting"
@@ -1523,6 +1646,159 @@ function ConvertedFileLibrary({
           <span>Converted files will appear here after the folder scan is connected.</span>
         </div>
       )}
+    </section>
+  );
+}
+
+function MeshView({ posts }: { posts: ConvertedPost[] }) {
+  const mesh = useMemo(() => {
+    const genericTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
+    const tagCounts = new Map<string, number>();
+
+    posts.forEach((post) => {
+      post.tags.forEach((tag) => {
+        const normalized = tag.replace(/^#/, "").trim();
+
+        if (!normalized || genericTags.has(normalized.toLowerCase())) {
+          return;
+        }
+
+        tagCounts.set(normalized, (tagCounts.get(normalized) ?? 0) + 1);
+      });
+    });
+
+    const tags = Array.from(tagCounts.entries())
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .slice(0, 12);
+    const tagNames = new Set(tags.map(([tag]) => tag));
+    const linkedPosts = posts
+      .filter((post) => post.tags.some((tag) => tagNames.has(tag.replace(/^#/, "").trim())))
+      .slice(0, 42);
+    const tagPositions = new Map<string, { x: number; y: number }>();
+    const postPositions = new Map<string, { x: number; y: number }>();
+    const centerX = 500;
+    const centerY = 310;
+
+    tags.forEach(([tag], index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(1, tags.length) - Math.PI / 2;
+      tagPositions.set(tag, {
+        x: centerX + Math.cos(angle) * 150,
+        y: centerY + Math.sin(angle) * 115
+      });
+    });
+
+    linkedPosts.forEach((post, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(1, linkedPosts.length) - Math.PI / 2;
+      const radius = index % 2 === 0 ? 255 : 218;
+      postPositions.set(post.id, {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius
+      });
+    });
+
+    return { linkedPosts, postPositions, tagCounts, tagPositions, tags };
+  }, [posts]);
+
+  return (
+    <section className="mesh-page">
+      <div className="library-header">
+        <div>
+          <p className="eyebrow">TAG 연결망</p>
+          <h1>Mesh View</h1>
+        </div>
+        <span className="mesh-summary">{mesh.linkedPosts.length}개 글 / {mesh.tags.length}개 TAG</span>
+      </div>
+
+      <div className="mesh-layout">
+        <div className="mesh-canvas-panel">
+          {mesh.tags.length === 0 ? (
+            <div className="empty-state mesh-empty-state">
+              <GitBranch size={28} />
+              <strong>연결할 TAG가 없습니다.</strong>
+              <span>요약과 TAG 생성을 먼저 실행하면 글 사이의 관계를 볼 수 있습니다.</span>
+            </div>
+          ) : (
+            <svg className="mesh-svg" viewBox="0 0 1000 620" role="img" aria-label="TAG 기반 글 연결망">
+              {mesh.linkedPosts.flatMap((post) => {
+                const postPosition = mesh.postPositions.get(post.id);
+
+                if (!postPosition) {
+                  return [];
+                }
+
+                return post.tags
+                  .map((tag) => tag.replace(/^#/, "").trim())
+                  .filter((tag) => mesh.tagPositions.has(tag))
+                  .slice(0, 4)
+                  .map((tag) => {
+                    const tagPosition = mesh.tagPositions.get(tag);
+
+                    if (!tagPosition) {
+                      return null;
+                    }
+
+                    return (
+                      <line
+                        className="mesh-edge"
+                        key={`${post.id}-${tag}`}
+                        x1={postPosition.x}
+                        x2={tagPosition.x}
+                        y1={postPosition.y}
+                        y2={tagPosition.y}
+                      />
+                    );
+                  });
+              })}
+              {mesh.linkedPosts.map((post) => {
+                const position = mesh.postPositions.get(post.id);
+
+                if (!position) {
+                  return null;
+                }
+
+                return (
+                  <g className={`mesh-post-node platform-${post.platform}`} key={post.id}>
+                    <circle cx={position.x} cy={position.y} r={7} />
+                    <title>{post.title || "Untitled Post"}</title>
+                  </g>
+                );
+              })}
+              {mesh.tags.map(([tag, count], index) => {
+                const position = mesh.tagPositions.get(tag);
+
+                if (!position) {
+                  return null;
+                }
+
+                return (
+                  <g className="mesh-tag-node" key={tag}>
+                    <circle cx={position.x} cy={position.y} r={18 + Math.min(14, count * 1.4)} />
+                    <text x={position.x} y={position.y - 2}>
+                      {tag}
+                    </text>
+                    <text className="mesh-tag-count" x={position.x} y={position.y + 14}>
+                      {count}
+                    </text>
+                    <title>{`${index + 1}. ${tag}: ${count}개 글`}</title>
+                  </g>
+                );
+              })}
+            </svg>
+          )}
+        </div>
+
+        <aside className="mesh-side-panel">
+          <h2>Top TAG</h2>
+          <div className="mesh-tag-list">
+            {mesh.tags.map(([tag, count]) => (
+              <div className="mesh-tag-item" key={tag}>
+                <span>{tag}</span>
+                <strong>{count}</strong>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
     </section>
   );
 }
@@ -1851,33 +2127,43 @@ function PdfWriteView({
     <section className="pdf-page">
       <div className="library-header">
         <div>
-          <p className="eyebrow">PDF Library</p>
-          <h1>Created PDFs</h1>
+          <p className="eyebrow">PDF 보관함</p>
+          <h1>생성된 PDF</h1>
         </div>
         <button className="primary-action compact" onClick={onCreate} type="button">
           <Plus size={18} />
-          Create PDF
+          PDF 만들기
         </button>
       </div>
 
       <div className="pdf-card-grid">
+        {pdfBooks.length === 0 && (
+          <div className="empty-state pdf-empty-state">
+            <FileText size={34} />
+            <strong>아직 만들어진 PDF가 없습니다.</strong>
+            <span>PDF 만들기를 눌러 현재 Markdown 카드로 책을 만들어보세요.</span>
+          </div>
+        )}
         {pdfBooks.map((pdf) => (
           <button className="pdf-card" key={pdf.id} onClick={() => onOpenPdf(pdf)} type="button">
             <div className="pdf-card-cover">
-              <FileText size={38} />
-              <span>PDF</span>
+              {pdf.coverUrl ? (
+                <img alt={`${pdf.title} 표지`} loading="lazy" src={pdf.coverUrl} />
+              ) : (
+                <>
+                  <FileText size={38} />
+                  <span>PDF</span>
+                </>
+              )}
             </div>
             <div className="pdf-card-body">
-              <div className="post-meta">
-                <span>{pdf.createdAt}</span>
-                <strong>{pdf.pageCount} pages</strong>
-              </div>
-              <strong>{pdf.title}</strong>
-              <p>{pdf.dateRange}</p>
+              <strong className="pdf-card-date">{pdf.dateRange || pdf.createdAt}</strong>
+              <p className="pdf-card-count">{typeof pdf.postCount === "number" ? `${pdf.postCount}개 글` : "글 수 정보 없음"} / {pdf.pageCount}쪽</p>
+              <p className="pdf-card-source">원문 link</p>
               <small>{pdf.filePath}</small>
               <div className="pdf-card-action">
                 <Eye size={18} />
-                Preview
+                미리보기
               </div>
             </div>
           </button>
@@ -1886,7 +2172,6 @@ function PdfWriteView({
     </section>
   );
 }
-
 function SettingsView({
   accountDraft,
   editAccount,
@@ -1944,16 +2229,18 @@ function SettingsView({
 
       <Panel title="General Setting" icon={<FolderOpen size={18} />}>
         <label>
-          Obsidian Output Folder
+          DB Folder
           <input
             onChange={(event) => updateSettings("obsidianRootFolder", event.target.value)}
+            placeholder="F:\\Obsidian\\PC-Madwind\\SNS"
             value={settings.obsidianRootFolder}
           />
         </label>
         <label>
-          PDF Output Folder
+          Output Folder
           <input
             onChange={(event) => updateSettings("pdfOutputFolder", event.target.value)}
+            placeholder="F:\\Obsidian\\PC-Madwind\\PDF"
             value={settings.pdfOutputFolder}
           />
         </label>
@@ -2306,96 +2593,289 @@ function Segmented<Option extends string>({
 }
 
 function PdfViewerModal({ pdf, onClose }: { pdf: PdfBook; onClose: () => void }) {
+  const [selectedPage, setSelectedPage] = useState(1);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const wheelLockRef = useRef(0);
+  const pageCount = Math.max(1, Number(pdf.pageCount || 1));
+  const pages = useMemo(() => Array.from({ length: pageCount }, (_item, index) => index + 1), [pageCount]);
+  const pageImageUrl = (page: number, dpi: number) => `/api/pdf-page?path=${encodeURIComponent(pdf.filePath)}&page=${page}&dpi=${dpi}`;
+
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
-      <section className="modal-shell" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="PDF Preview">
+      <section
+        className={isExpanded ? "modal-shell pdf-viewer-shell expanded" : "modal-shell pdf-viewer-shell"}
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="PDF Preview"
+      >
         <header className="modal-header">
           <div>
-            <p className="eyebrow">PDF Preview</p>
+            <p className="eyebrow">PDF 미리보기</p>
             <h2>{pdf.title}</h2>
           </div>
-          <button className="icon-button" onClick={onClose} title="Close" type="button">
-            <X size={20} />
-          </button>
-        </header>
-        <div className="modal-body">
-          <div className="pdf-preview-frame">
-            <FileText size={42} />
-            <strong>{pdf.title}</strong>
-            <span>{pdf.filePath}</span>
-            <p>{pdf.pageCount} pages / {pdf.dateRange}</p>
+          <div className="modal-header-actions">
+            <button className="icon-button" onClick={() => setIsExpanded((current) => !current)} title={isExpanded ? "창 크기 복원" : "전체보기"} type="button">
+              {isExpanded ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
+            </button>
+            <button className="icon-button" onClick={onClose} title="닫기" type="button">
+              <X size={20} />
+            </button>
           </div>
+        </header>
+        <div className="modal-body pdf-viewer-body">
+          <aside className="pdf-page-nav" aria-label="PDF page navigation">
+            {pages.map((page) => (
+              <button
+                className={page === selectedPage ? "pdf-page-thumb active" : "pdf-page-thumb"}
+                key={page}
+                onClick={() => setSelectedPage(page)}
+                type="button"
+              >
+                <img alt={`${page}쪽 미리보기`} loading="lazy" src={pageImageUrl(page, 48)} />
+                <span>{page}</span>
+              </button>
+            ))}
+          </aside>
+          <main
+            className="pdf-page-preview-pane"
+            onWheel={(event) => {
+              event.preventDefault();
+
+              if (Math.abs(event.deltaY) < 12) {
+                return;
+              }
+
+              const now = Date.now();
+
+              if (now - wheelLockRef.current < 260) {
+                return;
+              }
+
+              wheelLockRef.current = now;
+              setSelectedPage((current) => Math.min(pageCount, Math.max(1, current + (event.deltaY > 0 ? 1 : -1))));
+            }}
+          >
+            <img alt={`${selectedPage}쪽`} className="pdf-page-preview-image" src={pageImageUrl(selectedPage, 150)} />
+          </main>
         </div>
       </section>
     </div>
   );
 }
-
 function PdfCreatorModal({
+  creating,
   settings,
   toggleField,
+  updatePdfStyle,
   updateSettings,
+  onCreate,
   onClose
 }: {
+  creating: boolean;
   settings: AppSettings;
   toggleField: (target: "optionalFields" | "pdfFields", field: ExportField) => void;
+  updatePdfStyle: <Key extends keyof PdfTextStyle>(target: PdfStyleTarget, key: Key, value: PdfTextStyle[Key]) => void;
   updateSettings: <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => void;
+  onCreate: () => void;
   onClose: () => void;
 }) {
+  const [styleTarget, setStyleTarget] = useState<PdfStyleTarget>("body");
+  const [stylePreviewText, setStylePreviewText] = useState("가나다라마바사아자차카타파하\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz");
+  const activeStyle = settings.pdfStyles[styleTarget];
+  const stylePreview: CSSProperties = {
+    color: getReadablePreviewColor(activeStyle.color, settings.theme),
+    fontFamily: `"${activeStyle.fontFamily}", "Malgun Gothic", sans-serif`,
+    fontSize: `${activeStyle.fontSize * 2}px`,
+    fontStyle: activeStyle.italic ? "italic" : "normal",
+    fontWeight: activeStyle.bold ? 800 : 500,
+    lineHeight: activeStyle.lineHeight,
+    textAlign: "center",
+    textDecoration: activeStyle.underline ? "underline" : "none"
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
-      <section className="modal-shell" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Create PDF">
+      <section className="modal-shell pdf-creator-shell" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Create PDF">
         <header className="modal-header">
           <div>
-            <p className="eyebrow">PDF Write</p>
-            <h2>Create PDF</h2>
+            <p className="eyebrow">PDF 만들기</p>
+            <h2>PDF 생성</h2>
           </div>
-          <button className="icon-button" onClick={onClose} title="Close" type="button">
+          <button className="icon-button" onClick={onClose} title="닫기" type="button">
             <X size={20} />
           </button>
         </header>
         <div className="modal-body">
           <Panel title="Source" icon={<Database size={18} />}>
-            <ReadOnlyLine label="Obsidian DB Folder" value={settings.obsidianRootFolder} />
-            <ReadOnlyLine label="PDF Output Folder" value={settings.pdfOutputFolder} />
+            <label>
+              DB Folder
+              <input
+                onChange={(event) => updateSettings("obsidianRootFolder", event.target.value)}
+                placeholder="F:\\Obsidian\\PC-Madwind\\SNS"
+                value={settings.obsidianRootFolder}
+              />
+            </label>
+            <label>
+              Output Folder
+              <input
+                onChange={(event) => updateSettings("pdfOutputFolder", event.target.value)}
+                placeholder="F:\\Obsidian\\PC-Madwind\\PDF"
+                value={settings.pdfOutputFolder}
+              />
+            </label>
           </Panel>
           <Panel title="PDF Setting" icon={<FileText size={18} />}>
             <label>
-              Split Mode
+              Split mode
               <select
-                onChange={(event) =>
-                  updateSettings("pdfSplitMode", event.target.value as AppSettings["pdfSplitMode"])
-                }
+                onChange={(event) => updateSettings("pdfSplitMode", event.target.value as AppSettings["pdfSplitMode"])}
                 value={settings.pdfSplitMode}
               >
-                <option value="year">By Year</option>
-                <option value="date-range">Date Range</option>
-                <option value="page-count">Page Count</option>
+                <option value="year">Year list</option>
+                <option value="date-range">Date range</option>
+                <option value="page-count">Pages per PDF</option>
               </select>
             </label>
             <PdfSplitControls settings={settings} updateSettings={updateSettings} />
             <label>
-              Image Layout
+              Image layout
               <select
-                onChange={(event) =>
-                  updateSettings("imageLayout", event.target.value as AppSettings["imageLayout"])
-                }
+                onChange={(event) => updateSettings("imageLayout", event.target.value as AppSettings["imageLayout"])}
                 value={settings.imageLayout}
               >
                 <option value="collage">Collage</option>
-                <option value="individual">Individual Images</option>
+                <option value="individual">Individual images</option>
+                <option value="collage-individual">Collage + individual images</option>
               </select>
             </label>
             <RequiredFields />
             <FieldSelector selectedFields={settings.pdfFields} onToggle={(field) => toggleField("pdfFields", field)} />
           </Panel>
+          <Panel title="Overview" icon={<ListFilter size={18} />}>
+            <div className="pdf-overview-options">
+              <ReadOnlyLine label="Included" value="Summary, Thinking, Postings, Favorite Posts, Mesh View" />
+              <p className="hint">Markdown에 저장된 요약, TAG, 댓글, 반응 정보를 사용해서 책 앞부분의 요약 페이지를 만듭니다.</p>
+            </div>
+          </Panel>
+          <Panel title="Style" icon={<Pencil size={18} />}>
+            <label>
+              Page orientation
+              <select
+                onChange={(event) => {
+                  const nextOrientation = event.target.value as AppSettings["pdfPageOrientation"];
+
+                  updateSettings("pdfPageOrientation", nextOrientation);
+                  if (nextOrientation === "landscape" && settings.pdfTextColumnCount === 1) {
+                    updateSettings("pdfTextColumnCount", 2);
+                  }
+                  if (nextOrientation === "portrait" && settings.pdfTextColumnCount === 3) {
+                    updateSettings("pdfTextColumnCount", 2);
+                  }
+                }}
+                value={settings.pdfPageOrientation}
+              >
+                <option value="portrait">세로</option>
+                <option value="landscape">가로</option>
+              </select>
+            </label>
+            <label>
+              Body windows
+              <select
+                onChange={(event) => updateSettings("pdfTextColumnCount", Number(event.target.value) as AppSettings["pdfTextColumnCount"])}
+                value={settings.pdfTextColumnCount}
+              >
+                <option disabled={settings.pdfPageOrientation === "landscape"} value={1}>
+                  본문 1개
+                </option>
+                <option value={2}>본문 2개</option>
+                <option disabled={settings.pdfPageOrientation !== "landscape"} value={3}>
+                  본문 3개
+                </option>
+              </select>
+            </label>
+            {settings.pdfPageOrientation !== "landscape" && (
+              <p className="hint">본문 3개는 가로 페이지에서만 사용할 수 있습니다.</p>
+            )}
+            {settings.pdfPageOrientation === "landscape" && (
+              <p className="hint">가로 페이지에서는 본문 2개 또는 3개를 사용할 수 있습니다.</p>
+            )}
+            <label>
+              Cover image
+              <input
+                onChange={(event) => updateSettings("pdfCoverImagePath", event.target.value)}
+                placeholder="assets\\heart-food-journal-cover.jpeg"
+                value={settings.pdfCoverImagePath}
+              />
+            </label>
+            <label>
+              Style target
+              <select onChange={(event) => setStyleTarget(event.target.value as PdfStyleTarget)} value={styleTarget}>
+                {Object.entries(pdfStyleLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="pdf-style-grid">
+              <label>
+                Font
+                <select onChange={(event) => updatePdfStyle(styleTarget, "fontFamily", event.target.value)} value={activeStyle.fontFamily}>
+                  <option value="Malgun Gothic">Malgun Gothic</option>
+                  <option value="Pretendard">Pretendard</option>
+                  <option value="Noto Sans KR">Noto Sans KR</option>
+                  <option value="Nanum Gothic">Nanum Gothic</option>
+                </select>
+              </label>
+              <label>
+                Size
+                <input min={7} max={32} onChange={(event) => updatePdfStyle(styleTarget, "fontSize", Number(event.target.value))} type="number" value={activeStyle.fontSize} />
+              </label>
+              <label>
+                Color
+                <input onChange={(event) => updatePdfStyle(styleTarget, "color", event.target.value)} type="color" value={activeStyle.color} />
+              </label>
+              <label>
+                Line height
+                <input max={2.4} min={1} onChange={(event) => updatePdfStyle(styleTarget, "lineHeight", Number(event.target.value))} step={0.05} type="number" value={activeStyle.lineHeight} />
+              </label>
+            </div>
+            <div className="style-toggle-row">
+              <label className="inline-check">
+                <input checked={activeStyle.bold} onChange={(event) => updatePdfStyle(styleTarget, "bold", event.target.checked)} type="checkbox" />
+                Bold
+              </label>
+              <label className="inline-check">
+                <input checked={activeStyle.italic} onChange={(event) => updatePdfStyle(styleTarget, "italic", event.target.checked)} type="checkbox" />
+                Italic
+              </label>
+              <label className="inline-check">
+                <input checked={activeStyle.underline} onChange={(event) => updatePdfStyle(styleTarget, "underline", event.target.checked)} type="checkbox" />
+                Underline
+              </label>
+            </div>
+            <div className="pdf-style-preview">
+              <span>미리보기</span>
+              <div
+                className="pdf-style-preview-editor"
+                contentEditable
+                onInput={(event) => setStylePreviewText(event.currentTarget.innerText)}
+                role="textbox"
+                style={stylePreview}
+                suppressContentEditableWarning
+              >
+                {stylePreviewText}
+              </div>
+            </div>
+          </Panel>
         </div>
         <footer className="modal-footer">
-          <button className="ghost-action compact" onClick={onClose} type="button">
-            Cancel
+          <button className="ghost-action compact" disabled={creating} onClick={onClose} type="button">
+            취소
           </button>
-          <button className="primary-action compact" onClick={onClose} type="button">
-            Create
+          <button className="primary-action compact" disabled={creating} onClick={onCreate} type="button">
+            {creating ? "생성 중..." : "생성"}
           </button>
         </footer>
       </section>
@@ -2416,14 +2896,12 @@ function PdfSplitControls({
         <label>
           Year
           <input
-            inputMode="numeric"
-            maxLength={4}
             onChange={(event) => updateSettings("pdfYear", event.target.value)}
-            placeholder="2026"
+            placeholder="2026, 2025, 2023-2024"
             value={settings.pdfYear}
           />
         </label>
-        <p className="hint">One PDF will be created for posts written in this year.</p>
+        <p className="hint">쉼표로 구분된 각 항목이 각각 한 권의 PDF가 됩니다. 예: 2026, 2025, 2023-2024</p>
       </div>
     );
   }
@@ -2434,22 +2912,14 @@ function PdfSplitControls({
         <div className="number-row">
           <label>
             From
-            <input
-              onChange={(event) => updateSettings("pdfDateFrom", event.target.value)}
-              type="date"
-              value={settings.pdfDateFrom}
-            />
+            <input onChange={(event) => updateSettings("pdfDateFrom", event.target.value)} placeholder="YYYY-MM-DD" type="text" value={settings.pdfDateFrom} />
           </label>
           <label>
             To
-            <input
-              onChange={(event) => updateSettings("pdfDateTo", event.target.value)}
-              type="date"
-              value={settings.pdfDateTo}
-            />
+            <input onChange={(event) => updateSettings("pdfDateTo", event.target.value)} placeholder="YYYY-MM-DD" type="text" value={settings.pdfDateTo} />
           </label>
         </div>
-        <p className="hint">Only posts within this date range will be included.</p>
+        <p className="hint">지정된 기간 전체가 하나의 PDF로 만들어집니다.</p>
       </div>
     );
   }
@@ -2458,18 +2928,12 @@ function PdfSplitControls({
     <div className="split-control-panel">
       <label>
         Pages per PDF
-        <input
-          min={1}
-          onChange={(event) => updateSettings("pdfPageCount", Number(event.target.value))}
-          type="number"
-          value={settings.pdfPageCount}
-        />
+        <input min={30} onChange={(event) => updateSettings("pdfPageCount", Number(event.target.value))} placeholder="200" type="number" value={settings.pdfPageCount || ""} />
       </label>
-      <p className="hint">New PDF files will be started after this page count.</p>
+      <p className="hint">30쪽 이상만 가능합니다. 마지막 권이 30쪽 미만이면 앞 권에 합칩니다.</p>
     </div>
   );
 }
-
 function SearchPanelModal({
   query,
   onApply,
@@ -2731,12 +3195,12 @@ function ArchiveImportModal({
   const detectedPlatform = selectedFile ? detectPlatformFromArchiveName(selectedFile.name) : null;
   const fileNameWarning =
     detectedPlatform && detectedPlatform !== platform
-      ? `파일명은 ${platformLabels[detectedPlatform]} archive처럼 보입니다. 현재 선택된 Provider는 ${platformLabels[platform]}입니다.`
+      ? `파일 이름은 ${platformLabels[detectedPlatform]} archive처럼 보입니다. 현재 선택한 Provider는 ${platformLabels[platform]}입니다.`
       : "";
   const canImport = Boolean(selectedFile) && !disabled;
   const importHint =
     platform === "youtube"
-      ? "Google Takeout에서 YouTube 및 YouTube Music의 게시물 데이터를 포함한 zip을 선택하세요."
+      ? "Google Takeout에서 YouTube 및 YouTube Music 게시물 데이터를 포함한 zip을 선택하세요."
       : platform === "facebook"
       ? "Meta/Facebook 정보 다운로드에서 받은 zip을 선택하세요."
       : "Meta 계정 센터에서 받은 Instagram 또는 Threads 정보 다운로드 zip을 선택하세요.";
@@ -3149,7 +3613,7 @@ function LlmProviderConfigModal({
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="LLM 설정"
+        aria-label="LLM ?ㅼ젙"
       >
         <header className="modal-header">
           <div>
@@ -3381,3 +3845,6 @@ function getPlatformIcon(platform: SnsPlatform) {
       return <Archive size={20} />;
   }
 }
+
+
+

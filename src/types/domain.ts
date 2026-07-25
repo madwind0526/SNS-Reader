@@ -2,9 +2,25 @@ export type SnsPlatform = "facebook" | "instagram" | "threads" | "youtube" | "x"
 
 export type ExportField = "comments" | "images" | "summary" | "tags";
 
-export type ImageLayout = "collage" | "individual";
+export type ImageLayout = "collage" | "individual" | "collage-individual";
 
 export type PdfSplitMode = "year" | "date-range" | "page-count";
+
+export type PdfPageOrientation = "portrait" | "landscape";
+
+export type PdfTextColumnCount = 1 | 2 | 3;
+
+export type PdfStyleTarget = "title" | "date" | "body" | "comments" | "summary" | "tags";
+
+export interface PdfTextStyle {
+  fontFamily: string;
+  fontSize: number;
+  color: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  lineHeight: number;
+}
 
 export type StorageLayout = "platform-month" | "month-platform";
 
@@ -64,6 +80,10 @@ export interface AppSettings {
   pdfDateFrom: string;
   pdfDateTo: string;
   pdfPageCount: number;
+  pdfPageOrientation: PdfPageOrientation;
+  pdfTextColumnCount: PdfTextColumnCount;
+  pdfCoverImagePath: string;
+  pdfStyles: Record<PdfStyleTarget, PdfTextStyle>;
   imageLayout: ImageLayout;
   selectedLlmProvider: LlmProviderId;
   maxTags: number;

@@ -9,6 +9,8 @@ const DEFAULT_MARKDOWN_ROOT = "./data/sample-md";
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_OPENAI_MODEL = "gpt-5.6-terra";
+const DEFAULT_BODY_LIMIT = Number(process.env.SNS_READER_LLM_BODY_LIMIT || 6000);
+const DEFAULT_TIMEOUT_MS = Number(process.env.SNS_READER_LLM_TIMEOUT_MS || 120000);
 
 function parseArgs(argv) {
   const args = {};
@@ -266,9 +268,9 @@ function buildPrompt({ title, date, platform, account, source, body }) {
     "- summary는 한국어 2문장으로 작성한다.",
     "- 각 문장은 45자 이상 140자 이하로 쓴다.",
     "- 첫 줄은 글의 핵심 사건, 목적, 주제를 담는다.",
-    "- 두 번째 줄은 구현 과정, 어려움, 감정, 의미 중 본문에 실제로 있는 내용을 담는다.",
+    "- 둘째 줄은 구현 과정, 어려움, 감정, 의미 중 본문에 실제로 있는 내용을 담는다.",
     "- 본문에 있는 고유명사, 기술명, 링크, 서비스명은 중요하면 그대로 반영한다.",
-    "- 본문에 없는 내용을 추측하지 않는다.",
+    "- 본문에 없는 내용은 추측하지 않는다.",
     "- '게시글입니다', '기록입니다' 같은 빈 표현만으로 끝내지 않는다.",
     "",
     "TAG 규칙:",
@@ -286,8 +288,19 @@ function buildPrompt({ title, date, platform, account, source, body }) {
     `source: ${source || ""}`,
     "",
     "body:",
-    truncateText(body, 12000),
+    truncateText(body, DEFAULT_BODY_LIMIT),
   ].join("\n");
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseJsonPayload(value) {
@@ -363,7 +376,7 @@ function extractResponsesOutput(data) {
 }
 
 async function callResponsesApi(config, post) {
-  const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/responses`, {
+  const response = await fetchWithTimeout(`${config.baseUrl.replace(/\/$/, "")}/responses`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -420,7 +433,7 @@ async function callResponsesApi(config, post) {
 }
 
 async function callChatCompletionsApi(config, post) {
-  const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+  const response = await fetchWithTimeout(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
@@ -461,7 +474,7 @@ async function callOllamaChatApi(config, post) {
     headers.Authorization = `Bearer ${config.apiKey}`;
   }
 
-  const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/api/chat`, {
+  const response = await fetchWithTimeout(`${config.baseUrl.replace(/\/$/, "")}/api/chat`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -602,6 +615,38 @@ function isIncludedPlatform(markdown, platform) {
   return new RegExp(`platform:\\s*"?${platform}"?`, "i").test(markdown);
 }
 
+function normalizeDate(value) {
+  const match = String(value || "").match(/(\d{4})[.-](\d{1,2})[.-](\d{1,2})/);
+
+  if (!match) {
+    return "";
+  }
+
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+}
+
+function isIncludedDate(markdown, args) {
+  const date = normalizeDate(readScalar(markdown, "date"));
+
+  if (!date) {
+    return !args.year && !args["date-from"] && !args["date-to"];
+  }
+
+  if (args.year && !String(args.year).split(",").map((year) => year.trim()).filter(Boolean).includes(date.slice(0, 4))) {
+    return false;
+  }
+
+  if (args["date-from"] && date < normalizeDate(args["date-from"])) {
+    return false;
+  }
+
+  if (args["date-to"] && date > normalizeDate(args["date-to"])) {
+    return false;
+  }
+
+  return true;
+}
+
 function isAlreadyEnriched(markdown, config) {
   const expectedProvider = config.mode === "local" ? "local-preview" : config.providerId;
   const expectedModel = config.model || "local-preview";
@@ -666,6 +711,10 @@ async function main() {
       continue;
     }
 
+    if (!isIncludedDate(markdown, args)) {
+      continue;
+    }
+
     if (!args.force && args["skip-any-existing"] && hasAnyExistingSummaryAndTags(markdown)) {
       alreadyEnriched += 1;
       continue;
@@ -691,6 +740,7 @@ async function main() {
       account: readScalar(markdown, "account"),
       body,
     };
+    console.log(`Enriching ${path.relative(root, file)}.`);
     const result = config.mode === "local" ? localFallback(post.title, post.body) : await enrichWithLlm(config, post);
     const nextMarkdown = upsertSummarySection(upsertFrontmatter(markdown, result.summary, result.tags, config), result.summary);
 

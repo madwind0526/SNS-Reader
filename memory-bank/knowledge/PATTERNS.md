@@ -65,3 +65,13 @@ Reusable implementation patterns for this project will be accumulated here.
 - The Login Browser action should open the persistent profile visibly and return immediately from the API; users log in manually, close the browser, then Update reopens the same profile for crawling.
 - Archive import and incremental update flows should run provider-scoped duplicate cleanup before validation/enrichment. The dedupe key must include `platform` so mirrored Facebook, Instagram, Threads, YouTube, and Naver Blog posts remain separate records, while same-provider `post_id` or exact body/media fingerprints collapse to one Markdown card.
 - Generated backup folders such as `_archive` must be excluded from card scans and dedupe scans unless an explicit recovery workflow needs them.
+- PDF Maker can reuse the `/api/markdown-cards` parser as its source of truth. Store generated PDF metadata in a sidecar JSON next to the PDF so the UI can list title, range, page count, and post count without reparsing the PDF.
+- PDFKit footer text must stay inside the page content box. Writing footer text below `page.height - page.margins.bottom` can trigger automatic page creation and make metadata page counts diverge from the actual PDF.
+- PDF text helpers should always reset `x` to the page margin after drawing absolute-position charts or word clouds. Otherwise subsequent headings and body text can inherit the chart cursor and render off to the side.
+- PDF Word Cloud labels should use bare tag text without `#` for better visual weight, while Markdown TAG sections can retain Obsidian-style hash tags.
+- Long PDF body text should be manually wrapped into page-sized chunks before drawing a background text box. Letting PDFKit auto-flow text out of a filled rectangle leaves later pages without the intended box background.
+- PDF preview UI should render the selected page in a non-scrolled right pane with `object-fit: contain` and fixed inset padding, while the left page navigator remains independently scrollable.
+- PDF page-count split should create full book volumes after estimating physical pages, then merge a final remainder under the configured minimum page threshold into the previous volume.
+- App Mesh View can reuse parsed Markdown card tags directly: compute top non-platform tags, place tag nodes on an inner ring, post nodes on an outer ring, and connect posts to their matching top tags.
+- LLM enrichment should support `--year`, `--date-from`, `--date-to`, and `--limit` so large local-model runs can be resumed and diagnosed by batch.
+- Word Cloud layout should measure each label before placement, cap long labels relative to the fixed panel width, place labels by spiral search, and skip only labels that cannot be placed inside bounds.
