@@ -1716,6 +1716,14 @@ function ConvertedFileLibrary({
 }
 
 function MeshView({ posts }: { posts: ConvertedPost[] }) {
+  const meshSvgRef = useRef<SVGSVGElement | null>(null);
+  const [meshViewport, setMeshViewport] = useState({ centerX: 500, centerY: 500, zoom: 1 });
+  const [meshDragStart, setMeshDragStart] = useState<{
+    centerX: number;
+    centerY: number;
+    pointerX: number;
+    pointerY: number;
+  } | null>(null);
   const mesh = useMemo(() => {
     const postTagMap = new Map<string, string[]>();
     const tagCounts = new Map<string, number>();
@@ -1737,44 +1745,52 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 18);
     const tagNames = new Set(topTags.map(([tag]) => tag));
-    const linkedPosts = posts
-      .filter((post) => (postTagMap.get(post.id) ?? []).some((tag) => tagNames.has(tag)))
-      .slice(0, 90);
+    const graphPosts = posts;
     const postPositions = new Map<string, { x: number; y: number }>();
     const edges: Array<{ from: string; to: string; sharedTags: string[]; weight: number }> = [];
     const postDegrees = new Map<string, number>();
+    const edgeWeights = new Map<string, { from: string; to: string; sharedTags: string[]; weight: number }>();
+    const postsByVisibleTag = new Map<string, string[]>();
     const centerX = 500;
-    const centerY = 310;
+    const centerY = 500;
 
-    for (let leftIndex = 0; leftIndex < linkedPosts.length; leftIndex += 1) {
-      const leftPost = linkedPosts[leftIndex];
-      const leftTags = new Set((postTagMap.get(leftPost.id) ?? []).filter((tag) => tagNames.has(tag)));
-
-      for (let rightIndex = leftIndex + 1; rightIndex < linkedPosts.length; rightIndex += 1) {
-        const rightPost = linkedPosts[rightIndex];
-        const sharedTags = (postTagMap.get(rightPost.id) ?? []).filter((tag) => leftTags.has(tag));
-
-        if (sharedTags.length === 0) {
-          continue;
-        }
-
-        edges.push({
-          from: leftPost.id,
-          to: rightPost.id,
-          sharedTags,
-          weight: sharedTags.length
+    graphPosts.forEach((post) => {
+      (postTagMap.get(post.id) ?? [])
+        .filter((tag) => tagNames.has(tag))
+        .forEach((tag) => {
+          postsByVisibleTag.set(tag, [...(postsByVisibleTag.get(tag) ?? []), post.id]);
         });
-        postDegrees.set(leftPost.id, (postDegrees.get(leftPost.id) ?? 0) + 1);
-        postDegrees.set(rightPost.id, (postDegrees.get(rightPost.id) ?? 0) + 1);
+    });
+
+    postsByVisibleTag.forEach((postIds, tag) => {
+      for (let leftIndex = 0; leftIndex < postIds.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < postIds.length; rightIndex += 1) {
+          const from = postIds[leftIndex];
+          const to = postIds[rightIndex];
+          const key = from < to ? `${from}---${to}` : `${to}---${from}`;
+          const existingEdge = edgeWeights.get(key);
+
+          if (existingEdge) {
+            existingEdge.sharedTags.push(tag);
+            existingEdge.weight += 1;
+          } else {
+            edgeWeights.set(key, { from, to, sharedTags: [tag], weight: 1 });
+          }
+
+          postDegrees.set(from, (postDegrees.get(from) ?? 0) + 1);
+          postDegrees.set(to, (postDegrees.get(to) ?? 0) + 1);
+        }
       }
-    }
+    });
+
+    edges.push(...edgeWeights.values());
 
     const visibleEdges = edges
-      .sort((left, right) => right.weight - left.weight || left.from.localeCompare(right.from))
-      .slice(0, 260);
+      .sort((left, right) => right.weight - left.weight || (postDegrees.get(right.from) ?? 0) - (postDegrees.get(left.from) ?? 0))
+      .slice(0, 700);
     const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
 
-    const layoutPosts = [...linkedPosts].sort((left, right) => {
+    const layoutPosts = [...graphPosts].sort((left, right) => {
       const degreeDelta = (postDegrees.get(right.id) ?? 0) - (postDegrees.get(left.id) ?? 0);
 
       return degreeDelta || left.dateIso.localeCompare(right.dateIso) || left.id.localeCompare(right.id);
@@ -1788,16 +1804,36 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       const radialJitter = (hashToUnit(post.filePath || post.id, 31) - 0.5) * 0.08;
       const radial = clampNumber(baseRadius * (1 - degreeRatio * 0.22) + radialJitter, 0.06, 0.98);
       const angle = index * goldenAngle + hashToUnit(post.id + post.dateIso, 17) * 0.42;
-      const jitterX = (hashToUnit(post.title + post.id, 47) - 0.5) * 24;
+      const jitterX = (hashToUnit(post.title + post.id, 47) - 0.5) * 18;
       const jitterY = (hashToUnit(post.id + post.platform, 59) - 0.5) * 18;
 
       postPositions.set(post.id, {
-        x: clampNumber(centerX + Math.cos(angle) * 430 * radial + jitterX, 58, 942),
-        y: clampNumber(centerY + Math.sin(angle) * 270 * radial + jitterY, 48, 572)
+        x: clampNumber(centerX + Math.cos(angle) * 438 * radial + jitterX, 48, 952),
+        y: clampNumber(centerY + Math.sin(angle) * 438 * radial + jitterY, 48, 952)
       });
     });
 
-    return { linkedPosts, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
+    return { graphPosts, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
+  }, [posts]);
+  const meshViewSize = 1000 / meshViewport.zoom;
+  const meshViewBoxX = clampNumber(meshViewport.centerX - meshViewSize / 2, 0, 1000 - meshViewSize);
+  const meshViewBoxY = clampNumber(meshViewport.centerY - meshViewSize / 2, 0, 1000 - meshViewSize);
+  const meshViewBox = `${meshViewBoxX} ${meshViewBoxY} ${meshViewSize} ${meshViewSize}`;
+  const clampMeshViewport = (centerX: number, centerY: number, zoom: number) => {
+    const nextSize = 1000 / zoom;
+    const minCenter = nextSize / 2;
+    const maxCenter = 1000 - nextSize / 2;
+
+    return {
+      centerX: clampNumber(centerX, minCenter, maxCenter),
+      centerY: clampNumber(centerY, minCenter, maxCenter),
+      zoom
+    };
+  };
+
+  useEffect(() => {
+    setMeshViewport({ centerX: 500, centerY: 500, zoom: 1 });
+    setMeshDragStart(null);
   }, [posts]);
 
   return (
@@ -1807,19 +1843,83 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
           <p className="eyebrow">{"TAG \uC5F0\uACB0\uB9DD"}</p>
           <h1>Mesh View</h1>
         </div>
-        <span className="mesh-summary">{mesh.linkedPosts.length}{"\uAC1C \uAE00 / "}{mesh.visibleEdges.length}{"\uAC1C \uC5F0\uACB0"}</span>
+        <span className="mesh-summary">{mesh.graphPosts.length}{"\uAC1C \uAE00 / "}{mesh.visibleEdges.length}{"\uAC1C \uC5F0\uACB0"}</span>
       </div>
 
       <div className="mesh-layout">
         <div className="mesh-canvas-panel">
-          {mesh.linkedPosts.length === 0 ? (
+          {mesh.graphPosts.length === 0 ? (
             <div className="empty-state mesh-empty-state">
               <GitBranch size={28} />
               <strong>{"\uC5F0\uACB0\uD560 \uAE00\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</strong>
               <span>{"\uC694\uC57D\uACFC TAG \uC0DD\uC131\uC744 \uBA3C\uC800 \uC2E4\uD589\uD558\uBA74 \uAC19\uC740 TAG\uB97C \uAC00\uC9C4 \uAE00\uB4E4\uC774 \uC5F0\uACB0\uB429\uB2C8\uB2E4."}</span>
             </div>
           ) : (
-            <svg className="mesh-svg" viewBox="0 0 1000 620" role="img" aria-label={"TAG \uAE30\uBC18 \uAE00 \uC5F0\uACB0\uB9DD"}>
+            <svg
+              ref={meshSvgRef}
+              className={meshDragStart ? "mesh-svg dragging" : "mesh-svg"}
+              viewBox={meshViewBox}
+              role="img"
+              aria-label={"TAG \uAE30\uBC18 \uAE00 \uC5F0\uACB0\uB9DD"}
+              onPointerDown={(event) => {
+                if (event.button !== 0) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setMeshDragStart({
+                  centerX: meshViewport.centerX,
+                  centerY: meshViewport.centerY,
+                  pointerX: event.clientX,
+                  pointerY: event.clientY
+                });
+              }}
+              onPointerMove={(event) => {
+                if (!meshDragStart || !meshSvgRef.current) {
+                  return;
+                }
+
+                const bounds = meshSvgRef.current.getBoundingClientRect();
+                const nextSize = 1000 / meshViewport.zoom;
+                const deltaX = ((event.clientX - meshDragStart.pointerX) / bounds.width) * nextSize;
+                const deltaY = ((event.clientY - meshDragStart.pointerY) / bounds.height) * nextSize;
+
+                setMeshViewport(clampMeshViewport(meshDragStart.centerX - deltaX, meshDragStart.centerY - deltaY, meshViewport.zoom));
+              }}
+              onPointerUp={(event) => {
+                if (meshDragStart) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+
+                setMeshDragStart(null);
+              }}
+              onPointerCancel={() => setMeshDragStart(null)}
+              onWheel={(event) => {
+                if (!meshSvgRef.current) {
+                  return;
+                }
+
+                event.preventDefault();
+                const bounds = meshSvgRef.current.getBoundingClientRect();
+                const relativeX = clampNumber((event.clientX - bounds.left) / bounds.width, 0, 1);
+                const relativeY = clampNumber((event.clientY - bounds.top) / bounds.height, 0, 1);
+
+                setMeshViewport((current) => {
+                  const currentSize = 1000 / current.zoom;
+                  const currentX = current.centerX - currentSize / 2;
+                  const currentY = current.centerY - currentSize / 2;
+                  const cursorX = currentX + relativeX * currentSize;
+                  const cursorY = currentY + relativeY * currentSize;
+                  const nextZoom = clampNumber(current.zoom * (event.deltaY < 0 ? 1.18 : 1 / 1.18), 1, 12);
+                  const nextSize = 1000 / nextZoom;
+                  const nextCenterX = cursorX - relativeX * nextSize + nextSize / 2;
+                  const nextCenterY = cursorY - relativeY * nextSize + nextSize / 2;
+
+                  return clampMeshViewport(nextCenterX, nextCenterY, nextZoom);
+                });
+              }}
+            >
               {mesh.visibleEdges.map((edge) => {
                 const from = mesh.postPositions.get(edge.from);
                 const to = mesh.postPositions.get(edge.to);
@@ -1842,7 +1942,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                   </line>
                 );
               })}
-              {mesh.linkedPosts.map((post) => {
+              {mesh.graphPosts.map((post) => {
                 const position = mesh.postPositions.get(post.id);
 
                 if (!position) {
@@ -1854,7 +1954,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                     <circle
                       cx={position.x}
                       cy={position.y}
-                      r={2.5 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 6.5}
+                      r={1 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 4.2}
                     />
                     <title>{(post.title || "Untitled Post") + "\n" + post.date + "\nConnections: " + (mesh.postDegrees.get(post.id) ?? 0)}</title>
                   </g>
@@ -3273,9 +3373,9 @@ function FilterPanelModal({
           <div className="filter-section">
             <span>Connection</span>
             <div className="connection-range-row">
-              <label className="connection-value-input">
-                Min
+              <label className="connection-value-input" aria-label="Minimum connection">
                 <input
+                  aria-label="Minimum connection"
                   max={connectionLimit}
                   min={0}
                   onChange={(event) => updateConnectionMinText(event.target.value)}
@@ -3310,9 +3410,9 @@ function FilterPanelModal({
                   value={connectionUpper}
                 />
               </div>
-              <label className="connection-value-input">
-                Max
+              <label className="connection-value-input" aria-label="Maximum connection">
                 <input
+                  aria-label="Maximum connection"
                   max={connectionLimit}
                   min={0}
                   onChange={(event) => updateConnectionMaxText(event.target.value)}
@@ -3320,10 +3420,6 @@ function FilterPanelModal({
                   value={connectionUpper}
                 />
               </label>
-            </div>
-            <div className="range-scale">
-              <span>0</span>
-              <span>Max {connectionMax}</span>
             </div>
           </div>
           <div className="filter-section">
