@@ -98,6 +98,18 @@ function runNodeScript(scriptPath: string, args: string[] = []) {
   });
 }
 
+function runDetachedNodeScript(scriptPath: string, args: string[] = []) {
+  const child = spawn(process.execPath, [scriptPath, ...args], {
+    cwd: process.cwd(),
+    detached: true,
+    env: process.env,
+    stdio: "ignore",
+    windowsHide: false
+  });
+
+  child.unref();
+}
+
 async function loadRuntimeEnv() {
   const envPath = path.resolve(process.cwd(), ".env");
   const fileEnv = await readFile(envPath, "utf8")
@@ -627,27 +639,20 @@ function updateScriptForAccount(
         };
       }
 
-      if (runtimeEnv.SNS_READER_CDP_URL) {
-        const args = ["--platform", "facebook", "--limit", runtimeEnv.FACEBOOK_IMPORT_LIMIT || "3"];
+      const args = ["--platform", "facebook", "--limit", runtimeEnv.FACEBOOK_IMPORT_LIMIT || "3"];
 
-        if (account.url) {
-          args.push("--url", account.url);
-        }
+      if (account.url) {
+        args.push("--url", account.url);
+      }
 
-        if (sinceDate) {
-          args.push("--since", sinceDate);
-        }
-
-        return {
-          script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
-          args,
-          label: account.label || "Facebook"
-        };
+      if (sinceDate) {
+        args.push("--since", sinceDate);
       }
 
       return {
-        warning:
-          "Facebook 건너뜀: FACEBOOK_ACCESS_TOKEN 또는 SNS_READER_CDP_URL이 필요합니다. Graph API 토큰을 쓰거나 Chrome remote debugging URL을 .env에 추가하세요."
+        script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
+        args,
+        label: account.label || "Facebook"
       };
     }
     case "youtube": {
@@ -668,51 +673,37 @@ function updateScriptForAccount(
       };
     }
     case "instagram": {
-      if (runtimeEnv.SNS_READER_CDP_URL) {
-        const args = ["--platform", "instagram", "--limit", runtimeEnv.INSTAGRAM_IMPORT_LIMIT || "3"];
+      const args = ["--platform", "instagram", "--limit", runtimeEnv.INSTAGRAM_IMPORT_LIMIT || "3"];
 
-        if (account.url) {
-          args.push("--url", account.url);
-        }
+      if (account.url) {
+        args.push("--url", account.url);
+      }
 
-        if (sinceDate) {
-          args.push("--since", sinceDate);
-        }
-
-        return {
-          script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
-          args,
-          label: account.label || "Instagram"
-        };
+      if (sinceDate) {
+        args.push("--since", sinceDate);
       }
 
       return {
-        warning:
-          "Instagram 건너뜀: archive import는 연결되어 있고, 증분 업데이트에는 SNS_READER_CDP_URL로 연결된 로그인 Chrome 세션이 필요합니다."
+        script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
+        args,
+        label: account.label || "Instagram"
       };
     }
     case "threads": {
-      if (runtimeEnv.SNS_READER_CDP_URL) {
-        const args = ["--platform", "threads", "--limit", "3"];
+      const args = ["--platform", "threads", "--limit", runtimeEnv.THREADS_IMPORT_LIMIT || "3"];
 
-        if (account.url) {
-          args.push("--url", account.url);
-        }
+      if (account.url) {
+        args.push("--url", account.url);
+      }
 
-        if (sinceDate) {
-          args.push("--since", sinceDate);
-        }
-
-        return {
-          script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
-          args,
-          label: account.label || "Threads"
-        };
+      if (sinceDate) {
+        args.push("--since", sinceDate);
       }
 
       return {
-        warning:
-          "Threads 건너뜀: archive import는 연결되어 있고, 증분 업데이트에는 SNS_READER_CDP_URL로 연결된 로그인 Chrome 세션이 필요합니다."
+        script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
+        args,
+        label: account.label || "Threads"
       };
     }
     default:
@@ -776,7 +767,7 @@ async function runSnsUpdatePipeline(settingsFilePath: string) {
     }
 
     if ("warning" in updateConfig) {
-      warnings.push(updateConfig.warning ?? "");
+      warnings.push(String(updateConfig.warning ?? ""));
       continue;
     }
 
@@ -1108,6 +1099,23 @@ export default defineConfig(() => {
               sendJson(response, 200, await runMarkdownEnrichment(settingsFilePath));
             } catch (error) {
               sendJson(response, 500, { error: error instanceof Error ? error.message : "Markdown enrichment failed." });
+            }
+          });
+
+          server.middlewares.use("/api/login-browser", async (request, response) => {
+            try {
+              if (request.method !== "POST") {
+                sendJson(response, 405, { error: "Method not allowed" });
+                return;
+              }
+
+              runDetachedNodeScript(path.resolve(process.cwd(), "tools/open-login-browser.mjs"));
+              sendJson(response, 200, {
+                ok: true,
+                message: "로그인 브라우저를 열었습니다. 필요한 SNS에 로그인한 뒤 브라우저 창을 닫아주세요."
+              });
+            } catch (error) {
+              sendJson(response, 500, { error: error instanceof Error ? error.message : "로그인 브라우저를 열지 못했습니다." });
             }
           });
 

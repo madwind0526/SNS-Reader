@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { launchPersistentBrowser } from "./playwright-session.mjs";
 
 const workspaceRoot = process.cwd();
 const DEFAULT_SETTINGS_FILE = "./data/runtime/app-settings.json";
@@ -490,6 +491,69 @@ async function captureBrowserPage(client, sessionId, platform, limit) {
   };
 }
 
+async function capturePlaywrightPage({ env, args, platform, url, limit }) {
+  const { context } = await launchPersistentBrowser({ env, args, headless: Boolean(args.headless) });
+  const page = context.pages()[0] ?? (await context.newPage());
+
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(1200);
+
+    if (platform === "facebook") {
+      return await page.evaluate(
+        async (postLimit) => {
+          function visibleArticles() {
+            return Array.from(document.querySelectorAll('[role="article"], article')).filter((node) =>
+              (node.innerText || "").includes("미친바람")
+            );
+          }
+
+          function clickMore(articles) {
+            for (const article of articles) {
+              const controls = Array.from(article.querySelectorAll('[role="button"], span, div'));
+              const more = controls.find((node) => (node.innerText || node.textContent || "").trim() === "더 보기");
+
+              if (more && typeof more.click === "function") {
+                more.click();
+              }
+            }
+          }
+
+          window.scrollTo(0, 0);
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          clickMore(visibleArticles());
+          await new Promise((resolve) => setTimeout(resolve, 900));
+
+          for (let attempt = 0; attempt < 4 && visibleArticles().length < postLimit + 1; attempt += 1) {
+            window.scrollBy(0, 900);
+            await new Promise((resolve) => setTimeout(resolve, 1400));
+            clickMore(visibleArticles());
+            await new Promise((resolve) => setTimeout(resolve, 700));
+          }
+
+          return {
+            text: document.body ? document.body.innerText : "",
+            articleTexts: visibleArticles()
+              .map((node) => node.innerText || "")
+              .filter(Boolean)
+              .slice(0, postLimit + 2),
+          };
+        },
+        Number(limit)
+      );
+    }
+
+    const text = await page.evaluate(() => (document.body ? document.body.innerText : ""));
+
+    return {
+      text,
+      articleTexts: [],
+    };
+  } finally {
+    await context.close();
+  }
+}
+
 function formatDateParts(date) {
   const pad = (value) => String(value).padStart(2, "0");
   const year = date.getFullYear();
@@ -636,11 +700,6 @@ async function main() {
 
   const env = await loadEnv();
   const cdpBaseUrl = normalizeCdpBaseUrl(args.cdp || env.SNS_READER_CDP_URL);
-
-  if (!cdpBaseUrl) {
-    throw new Error("SNS_READER_CDP_URL is not configured. Start Chrome with remote debugging and set SNS_READER_CDP_URL=http://127.0.0.1:9222.");
-  }
-
   const settings = await loadAppSettings(env);
   const account = (settings?.accounts ?? []).find(
     (item) => item.platform === platform && item.exportToObsidian !== false
@@ -654,19 +713,39 @@ async function main() {
     throw new Error(`${config.label} account URL is not configured.`);
   }
 
-  const client = await connectToBrowser(cdpBaseUrl);
+  let client = null;
+  let captureSource = "playwright";
 
   try {
-    const page = await openBrowserPage(client, url);
+    let capture = null;
 
-    await evaluate(
-      client,
-      page.sessionId,
-      "new Promise((resolve) => { window.scrollTo(0, 0); setTimeout(resolve, 1200); })",
-      true
-    );
+    if (cdpBaseUrl) {
+      try {
+        client = await connectToBrowser(cdpBaseUrl);
+        const page = await openBrowserPage(client, url);
 
-    const capture = await captureBrowserPage(client, page.sessionId, platform, limit);
+        await evaluate(
+          client,
+          page.sessionId,
+          "new Promise((resolve) => { window.scrollTo(0, 0); setTimeout(resolve, 1200); })",
+          true
+        );
+
+        capture = await captureBrowserPage(client, page.sessionId, platform, limit);
+        captureSource = "chrome-cdp";
+      } catch (error) {
+        console.warn(
+          `Chrome CDP capture failed, falling back to Playwright profile: ${
+            error instanceof Error ? error.message : "CDP connection failed"
+          }`
+        );
+      }
+    }
+
+    if (!capture) {
+      capture = await capturePlaywrightPage({ env, args, platform, url, limit });
+    }
+
     const extractedPosts = extractPosts({
       platform,
       text: capture.text,
@@ -711,12 +790,13 @@ async function main() {
     }
 
     console.log(`${config.label} browser-session URL: ${url}`);
+    console.log(`Capture source: ${captureSource}`);
     console.log(`Extracted posts: ${extractedPosts.length}`);
     console.log(`Written Markdown files: ${written.length}`);
     console.log(`Skipped duplicate posts: ${skippedDuplicates}`);
     written.forEach((filePath) => console.log(filePath));
   } finally {
-    client.close();
+    client?.close();
   }
 }
 

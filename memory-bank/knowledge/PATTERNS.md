@@ -46,3 +46,20 @@ Reusable implementation patterns for this project will be accumulated here.
 - Full image preview should use viewport-based `max-width` and `max-height`, not percentage max-height inside a grid container. Percentage max-height allowed portrait images to exceed the shell height.
 - Facebook official export video media can be represented in the Markdown/card UI by copying the original video and generating a `*-video-poster.jpg` image with `ffmpeg`; the poster participates in normal image preview rendering.
 - Facebook browser-session captures must not write feed-card text directly when it contains collapsed UI markers. Extract body text from the post permalink view, stop before reactions/comments/media-count UI, and fail validation when body or title still contains collapsed text.
+
+# Wave 8 Patterns
+
+- Web file picker archive imports should stream the selected `File` body to a temporary server-side zip before passing it to importer scripts; browser file inputs cannot reliably expose local absolute paths.
+- Archive imports should validate both filename hints and internal archive structure. Filename mismatches are useful non-blocking UI warnings, while internal zip structure mismatches should block the import before importer scripts run.
+- Naver Blog latest-post import can use RSS for discovery and `m.blog.naver.com/{blogId}/{logNo}` for full SmartEditor body extraction.
+- Naver Blog all-post discovery works through `PostTitleListAsync.naver?blogId={blogId}&currentPage={n}&categoryNo=0&countPerPage=30`; results include `logNo`, `categoryNo`, `addDate`, and `totalCount`, and should be deduplicated by `logNo`.
+- Naver Blog paragraph extraction should join captured editor paragraphs with blank Markdown lines. Naver uses visual paragraph spacing and zero-width blank paragraphs, so single-newline joins make imported posts look incomplete or compressed.
+- Old Naver Blog posts can store body text inside `post_ct` or `postViewArea` as raw `<FONT>...<BR>...</FONT>` without `<p>` tags. The crawler needs a fallback that converts `<BR>` to Markdown line breaks and strips remaining tags.
+- Naver Blog MemoLog uses `MemologPostList.naver` and `MemologPostView.naver`, not `PostTitleListAsync.naver`. List pages can repeat the final page after the real end, so discovery should stop when no new `logNo` appears.
+- Naver Blog update imports must scan existing Markdown `post_id` values before writing because RSS/latest and date-range updates can include already imported boundary posts.
+- Sidebar Update should execute only SNS accounts with `exportToObsidian !== false`. Naver Blog can run date-range updates from the latest converted Markdown date; Facebook, Instagram, and Threads require a logged-in browser connector for practical incremental updates.
+- Login-based SNS incremental updates can use Chrome DevTools Protocol via `SNS_READER_CDP_URL`. Facebook profile crawling works by selecting `[role="article"]`, expanding each visible article's `See more` or Korean equivalent, reading expanded text, then scrolling and repeating.
+- Naver Blog video posts may expose a poster image only through `og:image`. Regular Naver Blog import should use usable `og:image` values as image fallbacks.
+- Existing Naver Blog Markdown can be repaired without full re-import by scanning `image_count: 0` files, refetching `source_url` or its mobile URL, downloading a usable `og:image`, and updating only `has_images`, `image_count`, the Images section, and `meta.json`.
+- Browser-session updates should default to a Playwright persistent Chrome profile under `data/runtime/browser-profile`; CDP remains an optional fallback for already-running debug Chrome sessions.
+- The Login Browser action should open the persistent profile visibly and return immediately from the API; users log in manually, close the browser, then Update reopens the same profile for crawling.

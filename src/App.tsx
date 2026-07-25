@@ -932,6 +932,25 @@ export function App() {
     }
   };
 
+  const openLoginBrowser = async () => {
+    setSystemMessage("로그인 브라우저를 여는 중입니다...");
+
+    try {
+      const response = await fetch("/api/login-browser", {
+        method: "POST"
+      });
+      const payload = (await response.json()) as { message?: string; error?: string };
+
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error || `Login browser failed with ${response.status}`);
+      }
+
+      setSystemMessage(payload.message || "로그인 브라우저를 열었습니다.");
+    } catch (error) {
+      setSystemMessage(error instanceof Error ? error.message : "로그인 브라우저를 열지 못했습니다.");
+    }
+  };
+
   const runSnsUpdate = async () => {
     if (isUpdatingSns) {
       return;
@@ -991,6 +1010,7 @@ export function App() {
         settings={settings}
         view={view}
         onQueryChange={setQuery}
+        onLoginBrowser={openLoginBrowser}
         onRestartServer={restartServer}
         onSnsRead={runSnsRead}
         onThemeToggle={() => updateSettings("theme", settings.theme === "light" ? "dark" : "light")}
@@ -1348,6 +1368,7 @@ function TopToolbar({
   query,
   settings,
   view,
+  onLoginBrowser,
   onQueryChange,
   onRestartServer,
   onSnsRead,
@@ -1358,6 +1379,7 @@ function TopToolbar({
   query: string;
   settings: AppSettings;
   view: ViewMode;
+  onLoginBrowser: () => void;
   onQueryChange: (query: string) => void;
   onRestartServer: () => void;
   onSnsRead: () => void;
@@ -1406,6 +1428,14 @@ function TopToolbar({
           type="button"
         >
           <Settings size={20} />
+        </button>
+        <button
+          className="icon-button"
+          onClick={onLoginBrowser}
+          title="로그인 브라우저"
+          type="button"
+        >
+          <KeyRound size={20} />
         </button>
         <button
           className="icon-button"

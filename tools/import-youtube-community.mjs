@@ -1,6 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { launchPersistentBrowser } from "./playwright-session.mjs";
 
 const workspaceRoot = process.cwd();
 const DEFAULT_SETTINGS_FILE = "./data/runtime/app-settings.json";
@@ -110,6 +112,155 @@ async function fetchText(url) {
   return response.text();
 }
 
+function normalizeCdpBaseUrl(value) {
+  const text = String(value || "").trim();
+
+  return text ? text.replace(/\/+$/, "") : "";
+}
+
+async function readJson(url) {
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error(`${url} failed with HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+class CdpClient {
+  constructor(webSocketUrl) {
+    this.webSocket = new WebSocket(webSocketUrl);
+    this.nextId = 1;
+    this.pending = new Map();
+    this.opened = new Promise((resolve, reject) => {
+      this.webSocket.addEventListener("open", resolve, { once: true });
+      this.webSocket.addEventListener("error", reject, { once: true });
+    });
+
+    this.webSocket.addEventListener("message", (event) => {
+      const message = JSON.parse(String(event.data));
+
+      if (!message.id || !this.pending.has(message.id)) {
+        return;
+      }
+
+      const pending = this.pending.get(message.id);
+      this.pending.delete(message.id);
+
+      if (message.error) {
+        pending.reject(new Error(message.error.message || "CDP command failed"));
+      } else {
+        pending.resolve(message.result ?? {});
+      }
+    });
+  }
+
+  async send(method, params = {}, sessionId = "") {
+    await this.opened;
+
+    const id = this.nextId;
+    this.nextId += 1;
+    const payload = sessionId ? { id, method, params, sessionId } : { id, method, params };
+
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.webSocket.send(JSON.stringify(payload));
+    });
+  }
+
+  close() {
+    this.webSocket.close();
+  }
+}
+
+async function evaluate(client, sessionId, expression, awaitPromise = false) {
+  const result = await client.send(
+    "Runtime.evaluate",
+    {
+      expression,
+      awaitPromise,
+      returnByValue: true,
+    },
+    sessionId
+  );
+
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text || "Runtime evaluation failed");
+  }
+
+  return result.result?.value;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForPageReady(client, sessionId) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const readyState = await evaluate(client, sessionId, "document.readyState").catch(() => "");
+
+    if (readyState === "complete" || readyState === "interactive") {
+      await sleep(1800);
+      return;
+    }
+
+    await sleep(300);
+  }
+}
+
+async function fetchTextFromBrowser(cdpBaseUrl, url) {
+  const version = await readJson(`${cdpBaseUrl}/json/version`);
+
+  if (!version.webSocketDebuggerUrl) {
+    throw new Error("Chrome CDP endpoint does not expose webSocketDebuggerUrl.");
+  }
+
+  const client = new CdpClient(version.webSocketDebuggerUrl);
+
+  try {
+    const created = await client.send("Target.createTarget", { url: "about:blank" });
+    const attached = await client.send("Target.attachToTarget", {
+      targetId: created.targetId,
+      flatten: true,
+    });
+    const sessionId = attached.sessionId;
+
+    await client.send("Page.enable", {}, sessionId);
+    await client.send("Runtime.enable", {}, sessionId);
+    await client.send("Page.navigate", { url }, sessionId);
+    await waitForPageReady(client, sessionId);
+    await evaluate(
+      client,
+      sessionId,
+      "new Promise((resolve) => { window.scrollBy(0, 1200); setTimeout(resolve, 1800); })",
+      true
+    );
+
+    return evaluate(client, sessionId, "document.documentElement ? document.documentElement.outerHTML : ''");
+  } finally {
+    client.close();
+  }
+}
+
+async function fetchTextFromPlaywright({ env, args, url }) {
+  const { context } = await launchPersistentBrowser({ env, args, headless: Boolean(args.headless) });
+  const page = context.pages()[0] ?? (await context.newPage());
+
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(1800);
+    await page.evaluate(() => window.scrollBy(0, 1200));
+    await page.waitForTimeout(1800);
+
+    return await page.evaluate(() => (document.documentElement ? document.documentElement.outerHTML : ""));
+  } finally {
+    await context.close();
+  }
+}
+
 function extractInitialData(html) {
   const marker = "var ytInitialData = ";
   const start = html.indexOf(marker);
@@ -188,6 +339,16 @@ function walk(value, visitor) {
   Object.values(value).forEach((item) => walk(item, visitor));
 }
 
+function isUnavailableCommunityPage(initialData) {
+  const text = JSON.stringify(initialData || "");
+
+  return (
+    text.includes("커뮤니티를 사용할 수 없습니다") ||
+    text.includes("Community is unavailable") ||
+    text.includes("This channel does not have any content")
+  );
+}
+
 function parseRelativeDate(value) {
   const text = String(value || "");
   const now = new Date();
@@ -243,6 +404,41 @@ function slugify(value) {
 
 function escapeYaml(value) {
   return String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function walkMarkdownFiles(root, files = []) {
+  if (!existsSync(root)) {
+    return files;
+  }
+
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+
+    if (entry.isDirectory()) {
+      await walkMarkdownFiles(fullPath, files);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+async function readExistingPostIds(root) {
+  const files = await walkMarkdownFiles(root);
+  const ids = new Set();
+
+  for (const filePath of files) {
+    const markdown = await readFile(filePath, "utf8").catch(() => "");
+    const platform = markdown.match(/^platform:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const postId = markdown.match(/^post_id:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+
+    if (platform === "youtube" && postId) {
+      ids.add(postId);
+    }
+  }
+
+  return ids;
 }
 
 function extractCommunityPosts(initialData) {
@@ -358,17 +554,43 @@ async function main() {
     return;
   }
 
-  const html = await fetchText(communityUrl);
-  const initialData = extractInitialData(html);
+  let html = await fetchText(communityUrl);
+  let initialData = extractInitialData(html);
+  let captureSource = "public-html";
+  const cdpBaseUrl = normalizeCdpBaseUrl(args.cdp || env.SNS_READER_CDP_URL);
+
+  if ((!initialData || isUnavailableCommunityPage(initialData)) && cdpBaseUrl) {
+    try {
+      html = await fetchTextFromBrowser(cdpBaseUrl, communityUrl);
+      initialData = extractInitialData(html);
+      captureSource = "chrome-cdp";
+    } catch (error) {
+      console.log(
+        `YouTube CDP fallback failed: ${error instanceof Error ? error.message : "CDP connection failed"}`
+      );
+    }
+  }
+
+  if (!initialData || isUnavailableCommunityPage(initialData)) {
+    try {
+      html = await fetchTextFromPlaywright({ env, args, url: communityUrl });
+      initialData = extractInitialData(html);
+      captureSource = "playwright";
+    } catch (error) {
+      console.log(
+        `YouTube Playwright fallback failed: ${
+          error instanceof Error ? error.message : "Playwright browser session failed"
+        }`
+      );
+    }
+  }
 
   if (!initialData) {
     console.log("YouTube Community initial data was not found.");
     return;
   }
 
-  const messageText = JSON.stringify(initialData).includes("이 커뮤니티는 사용할 수 없습니다");
-
-  if (messageText) {
+  if (isUnavailableCommunityPage(initialData)) {
     console.log("YouTube Community page is not available without a logged-in browser session.");
     return;
   }
@@ -377,8 +599,15 @@ async function main() {
     .filter((post) => !latestDate || post.date >= latestDate)
     .slice(0, limit);
   const written = [];
+  const existingPostIds = await readExistingPostIds(path.join(outputRoot, "YouTube"));
+  let skippedDuplicates = 0;
 
   for (const post of posts.sort((left, right) => left.date.getTime() - right.date.getTime())) {
+    if (existingPostIds.has(post.id)) {
+      skippedDuplicates += 1;
+      continue;
+    }
+
     const parts = formatDateParts(post.date);
     const stem = `${parts.fileDate}_youtube-community_${post.id}_${slugify(post.title) || post.id}`;
     const monthDir = path.join(outputRoot, "YouTube", parts.month);
@@ -386,12 +615,15 @@ async function main() {
 
     await mkdir(monthDir, { recursive: true });
     await writeFile(mdPath, buildMarkdown({ post, account }), "utf8");
+    existingPostIds.add(post.id);
     written.push(mdPath);
   }
 
   console.log(`YouTube Community URL: ${communityUrl}`);
+  console.log(`Capture source: ${captureSource}`);
   console.log(`Discovered posts: ${posts.length}`);
   console.log(`Written Markdown files: ${written.length}`);
+  console.log(`Skipped duplicate posts: ${skippedDuplicates}`);
   written.forEach((filePath) => console.log(filePath));
 }
 
