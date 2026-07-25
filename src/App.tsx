@@ -3088,9 +3088,16 @@ function FilterPanelModal({
 }) {
   const [draftFilters, setDraftFilters] = useState<CardFilters>(filters);
   const [dateError, setDateError] = useState("");
-  const rangeMax = Math.max(1, connectionMax);
-  const connectionMin = Math.min(draftFilters.connectionMin, rangeMax);
-  const connectionUpper = draftFilters.connectionMax > 0 ? Math.min(draftFilters.connectionMax, rangeMax) : rangeMax;
+  const connectionLimit = Math.max(0, connectionMax);
+  const sliderMax = Math.max(1, connectionLimit);
+  const connectionMin = Math.min(draftFilters.connectionMin, connectionLimit);
+  const connectionUpper = connectionLimit === 0
+    ? 0
+    : draftFilters.connectionMax > 0
+      ? Math.min(draftFilters.connectionMax, connectionLimit)
+      : connectionLimit;
+  const lowerPercent = (connectionMin / sliderMax) * 100;
+  const upperPercent = (connectionUpper / sliderMax) * 100;
 
   const updateDraft = <Key extends keyof CardFilters>(key: Key, value: CardFilters[Key]) => {
     if (key === "dateFrom" || key === "dateTo") {
@@ -3105,7 +3112,7 @@ function FilterPanelModal({
 
   const updateConnectionMin = (value: number) => {
     setDraftFilters((current) => {
-      const nextMin = Math.min(value, current.connectionMax > 0 ? current.connectionMax : rangeMax);
+      const nextMin = Math.min(value, current.connectionMax > 0 ? current.connectionMax : connectionLimit);
 
       return {
         ...current,
@@ -3120,9 +3127,29 @@ function FilterPanelModal({
 
       return {
         ...current,
-        connectionMax: nextMax >= rangeMax ? 0 : nextMax
+        connectionMax: nextMax >= connectionLimit ? 0 : nextMax
       };
     });
+  };
+
+  const updateConnectionMinText = (value: string) => {
+    const nextValue = Number(value);
+
+    if (!Number.isFinite(nextValue)) {
+      return;
+    }
+
+    updateConnectionMin(clampNumber(Math.round(nextValue), 0, connectionLimit));
+  };
+
+  const updateConnectionMaxText = (value: string) => {
+    const nextValue = Number(value);
+
+    if (!Number.isFinite(nextValue)) {
+      return;
+    }
+
+    updateConnectionMax(clampNumber(Math.round(nextValue), 0, connectionLimit));
   };
 
   const togglePlatformFilter = (platform: SnsPlatform, checked: boolean) => {
@@ -3148,7 +3175,7 @@ function FilterPanelModal({
     onApply({
       ...draftFilters,
       connectionMin,
-      connectionMax: connectionUpper >= rangeMax ? 0 : connectionUpper,
+      connectionMax: connectionUpper >= connectionLimit ? 0 : connectionUpper,
       commentAuthor: draftFilters.commentAuthor.trim(),
       tagText: draftFilters.tagText.trim()
     });
@@ -3245,15 +3272,28 @@ function FilterPanelModal({
           </div>
           <div className="filter-section">
             <span>Connection</span>
-            <div className="range-filter">
-              <div className="range-values">
-                <strong>{connectionMin}</strong>
-                <span>{connectionUpper}</span>
-              </div>
-              <div className="dual-range">
+            <div className="connection-range-row">
+              <label className="connection-value-input">
+                Min
+                <input
+                  max={connectionLimit}
+                  min={0}
+                  onChange={(event) => updateConnectionMinText(event.target.value)}
+                  type="number"
+                  value={connectionMin}
+                />
+              </label>
+              <div
+                className="dual-range"
+                style={{
+                  "--range-lower": `${lowerPercent}%`,
+                  "--range-upper": `${upperPercent}%`
+                } as CSSProperties}
+              >
+                <div className="dual-range-track" />
                 <input
                   aria-label="Minimum connection"
-                  max={rangeMax}
+                  max={sliderMax}
                   min={0}
                   onChange={(event) => updateConnectionMin(Number(event.target.value))}
                   onInput={(event) => updateConnectionMin(Number(event.currentTarget.value))}
@@ -3262,7 +3302,7 @@ function FilterPanelModal({
                 />
                 <input
                   aria-label="Maximum connection"
-                  max={rangeMax}
+                  max={sliderMax}
                   min={0}
                   onChange={(event) => updateConnectionMax(Number(event.target.value))}
                   onInput={(event) => updateConnectionMax(Number(event.currentTarget.value))}
@@ -3270,10 +3310,20 @@ function FilterPanelModal({
                   value={connectionUpper}
                 />
               </div>
-              <div className="range-scale">
-                <span>0</span>
-                <span>Max {connectionMax}</span>
-              </div>
+              <label className="connection-value-input">
+                Max
+                <input
+                  max={connectionLimit}
+                  min={0}
+                  onChange={(event) => updateConnectionMaxText(event.target.value)}
+                  type="number"
+                  value={connectionUpper}
+                />
+              </label>
+            </div>
+            <div className="range-scale">
+              <span>0</span>
+              <span>Max {connectionMax}</span>
             </div>
           </div>
           <div className="filter-section">
