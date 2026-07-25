@@ -246,11 +246,38 @@ const emptyCardFilters: CardFilters = {
 };
 
 const genericMeshTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
+const commonConnectionTagMinCount = 40;
+const commonConnectionTagRatio = 0.01;
+const meshVisibleEdgeLimit = 360;
+const meshCanvasSize = 1000;
+const meshPanMargin = 180;
 
 function getSemanticTags(post: ConvertedPost) {
   return Array.from(new Set(post.tags
     .map((tag) => tag.replace(/^#/, "").trim())
     .filter((tag) => tag && !genericMeshTags.has(tag.toLowerCase()))));
+}
+
+function getTagCounts(posts: ConvertedPost[]) {
+  const tagCounts = new Map<string, number>();
+
+  posts.forEach((post) => {
+    getSemanticTags(post).forEach((tag) => {
+      tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+    });
+  });
+
+  return tagCounts;
+}
+
+function getConnectionTagNames(posts: ConvertedPost[], tagCounts = getTagCounts(posts)) {
+  const commonLimit = Math.max(commonConnectionTagMinCount, Math.ceil(posts.length * commonConnectionTagRatio));
+
+  return new Set(
+    Array.from(tagCounts.entries())
+      .filter(([_tag, count]) => count < commonLimit)
+      .map(([tag]) => tag)
+  );
 }
 
 function hashToUnit(value: string, salt: number) {
@@ -271,14 +298,17 @@ function clampNumber(value: number, min: number, max: number) {
 function buildConnectionCounts(posts: ConvertedPost[]) {
   const connectedPostIds = new Map<string, Set<string>>();
   const postsByTag = new Map<string, string[]>();
+  const connectionTagNames = getConnectionTagNames(posts);
 
   posts.forEach((post) => {
     connectedPostIds.set(post.id, new Set());
 
-    getSemanticTags(post).forEach((tag) => {
-      const existingPosts = postsByTag.get(tag) ?? [];
-      postsByTag.set(tag, [...existingPosts, post.id]);
-    });
+    getSemanticTags(post)
+      .filter((tag) => connectionTagNames.has(tag))
+      .forEach((tag) => {
+        const existingPosts = postsByTag.get(tag) ?? [];
+        postsByTag.set(tag, [...existingPosts, post.id]);
+      });
   });
 
   postsByTag.forEach((postIds) => {
@@ -1724,9 +1754,16 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
     pointerX: number;
     pointerY: number;
   } | null>(null);
+  const meshDataKey = useMemo(() => {
+    const firstPostId = posts[0]?.id ?? "";
+    const lastPostId = posts[posts.length - 1]?.id ?? "";
+
+    return `${posts.length}:${firstPostId}:${lastPostId}`;
+  }, [posts]);
   const mesh = useMemo(() => {
     const postTagMap = new Map<string, string[]>();
-    const tagCounts = new Map<string, number>();
+    const tagCounts = getTagCounts(posts);
+    const connectionTagNames = getConnectionTagNames(posts, tagCounts);
 
     posts.forEach((post) => {
       const normalizedTags = getSemanticTags(post);
@@ -1736,15 +1773,12 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       }
 
       postTagMap.set(post.id, normalizedTags);
-      normalizedTags.forEach((tag) => {
-        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-      });
     });
 
     const topTags = Array.from(tagCounts.entries())
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 18);
-    const tagNames = new Set(topTags.map(([tag]) => tag));
+    const tagNames = new Set(topTags.map(([tag]) => tag).filter((tag) => connectionTagNames.has(tag)));
     const graphPosts = posts;
     const postPositions = new Map<string, { x: number; y: number }>();
     const edges: Array<{ from: string; to: string; sharedTags: string[]; weight: number }> = [];
@@ -1787,7 +1821,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
 
     const visibleEdges = edges
       .sort((left, right) => right.weight - left.weight || (postDegrees.get(right.from) ?? 0) - (postDegrees.get(left.from) ?? 0))
-      .slice(0, 700);
+      .slice(0, meshVisibleEdgeLimit);
     const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
 
     const layoutPosts = [...graphPosts].sort((left, right) => {
@@ -1815,14 +1849,22 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
 
     return { graphPosts, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
   }, [posts]);
-  const meshViewSize = 1000 / meshViewport.zoom;
-  const meshViewBoxX = clampNumber(meshViewport.centerX - meshViewSize / 2, 0, 1000 - meshViewSize);
-  const meshViewBoxY = clampNumber(meshViewport.centerY - meshViewSize / 2, 0, 1000 - meshViewSize);
+  const meshViewSize = meshCanvasSize / meshViewport.zoom;
+  const meshViewBoxX = clampNumber(
+    meshViewport.centerX - meshViewSize / 2,
+    -meshPanMargin,
+    meshCanvasSize - meshViewSize + meshPanMargin
+  );
+  const meshViewBoxY = clampNumber(
+    meshViewport.centerY - meshViewSize / 2,
+    -meshPanMargin,
+    meshCanvasSize - meshViewSize + meshPanMargin
+  );
   const meshViewBox = `${meshViewBoxX} ${meshViewBoxY} ${meshViewSize} ${meshViewSize}`;
   const clampMeshViewport = (centerX: number, centerY: number, zoom: number) => {
-    const nextSize = 1000 / zoom;
-    const minCenter = nextSize / 2;
-    const maxCenter = 1000 - nextSize / 2;
+    const nextSize = meshCanvasSize / zoom;
+    const minCenter = nextSize / 2 - meshPanMargin;
+    const maxCenter = meshCanvasSize - nextSize / 2 + meshPanMargin;
 
     return {
       centerX: clampNumber(centerX, minCenter, maxCenter),
@@ -1834,7 +1876,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
   useEffect(() => {
     setMeshViewport({ centerX: 500, centerY: 500, zoom: 1 });
     setMeshDragStart(null);
-  }, [posts]);
+  }, [meshDataKey]);
 
   return (
     <section className="mesh-page">
@@ -1881,7 +1923,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                 }
 
                 const bounds = meshSvgRef.current.getBoundingClientRect();
-                const nextSize = 1000 / meshViewport.zoom;
+                const nextSize = meshCanvasSize / meshViewport.zoom;
                 const deltaX = ((event.clientX - meshDragStart.pointerX) / bounds.width) * nextSize;
                 const deltaY = ((event.clientY - meshDragStart.pointerY) / bounds.height) * nextSize;
 
@@ -1906,13 +1948,13 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                 const relativeY = clampNumber((event.clientY - bounds.top) / bounds.height, 0, 1);
 
                 setMeshViewport((current) => {
-                  const currentSize = 1000 / current.zoom;
+                  const currentSize = meshCanvasSize / current.zoom;
                   const currentX = current.centerX - currentSize / 2;
                   const currentY = current.centerY - currentSize / 2;
                   const cursorX = currentX + relativeX * currentSize;
                   const cursorY = currentY + relativeY * currentSize;
                   const nextZoom = clampNumber(current.zoom * (event.deltaY < 0 ? 1.18 : 1 / 1.18), 1, 12);
-                  const nextSize = 1000 / nextZoom;
+                  const nextSize = meshCanvasSize / nextZoom;
                   const nextCenterX = cursorX - relativeX * nextSize + nextSize / 2;
                   const nextCenterY = cursorY - relativeY * nextSize + nextSize / 2;
 
