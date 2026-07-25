@@ -681,6 +681,13 @@ function hasAnyExistingSummaryAndTags(markdown) {
   return hasMeaningfulSummary(markdown) && hasMeaningfulTags(markdown);
 }
 
+function isArchivedFile(root, file) {
+  return path
+    .relative(root, file)
+    .split(path.sep)
+    .some((part) => part.toLowerCase() === "_archive");
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const env = await loadEnv();
@@ -703,6 +710,10 @@ async function main() {
   for (const file of files) {
     if (updated >= limit) {
       break;
+    }
+
+    if (isArchivedFile(root, file)) {
+      continue;
     }
 
     const markdown = await readFile(file, "utf8");

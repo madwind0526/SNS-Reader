@@ -1305,12 +1305,13 @@ input[type="checkbox"] {
 
 .mesh-page {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   align-content: start;
   gap: 18px;
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .mesh-summary {
@@ -1325,39 +1326,39 @@ input[type="checkbox"] {
 
 .mesh-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 250px;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
 }
 
-.mesh-canvas-panel,
-.mesh-side-panel {
+.mesh-canvas-panel {
   min-width: 0;
+  min-height: 0;
   border: 1px solid rgba(32, 33, 36, 0.12);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.76);
 }
 
-.dark .mesh-canvas-panel,
-.dark .mesh-side-panel {
+.dark .mesh-canvas-panel {
   border-color: rgba(243, 241, 234, 0.14);
   background: rgba(255, 255, 255, 0.05);
 }
 
 .mesh-canvas-panel {
-  min-height: 560px;
+  height: 100%;
   overflow: hidden;
 }
 
 .mesh-svg {
   display: block;
   width: 100%;
-  height: min(68vh, 640px);
+  height: 100%;
+  min-height: 0;
 }
 
 .mesh-edge {
   stroke: rgba(31, 111, 104, 0.25);
-  stroke-width: 1.1;
+  stroke-width: calc(0.8px + var(--edge-weight, 1) * 0.45px);
 }
 
 .dark .mesh-edge {
@@ -1369,93 +1370,33 @@ input[type="checkbox"] {
   opacity: 0.78;
 }
 
-.mesh-tag-node circle {
-  fill: rgba(31, 111, 104, 0.16);
-  stroke: rgba(31, 111, 104, 0.48);
-  stroke-width: 1.4;
+.mesh-post-node.platform-facebook circle {
+  fill: #2b77c8;
 }
 
-.mesh-tag-node text {
-  fill: #1f6f68;
-  font-size: 13px;
-  font-weight: 760;
-  letter-spacing: 0;
-  text-anchor: middle;
+.mesh-post-node.platform-instagram circle {
+  fill: #d64f8d;
 }
 
-.mesh-tag-node .mesh-tag-count {
-  fill: #60706a;
-  font-size: 10px;
-  font-weight: 650;
-}
-
-.dark .mesh-tag-node text {
+.mesh-post-node.platform-threads circle {
   fill: #8ed8c8;
 }
 
-.dark .mesh-tag-node .mesh-tag-count {
-  fill: #bac6c0;
+.mesh-post-node.platform-youtube circle {
+  fill: #d85b4b;
 }
 
-.mesh-side-panel {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-  padding: 16px;
+.mesh-post-node.platform-naver-blog circle {
+  fill: #1fb46c;
 }
 
-.mesh-side-panel h2 {
-  margin: 0;
-  color: #1f6f68;
-  font-size: 1rem;
-}
-
-.dark .mesh-side-panel h2 {
-  color: #8ed8c8;
-}
-
-.mesh-tag-list {
-  display: grid;
-  gap: 8px;
-}
-
-.mesh-tag-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  border-bottom: 1px solid rgba(32, 33, 36, 0.08);
-  padding: 7px 0;
-}
-
-.dark .mesh-tag-item {
-  border-color: rgba(243, 241, 234, 0.1);
-}
-
-.mesh-tag-item span {
-  min-width: 0;
-  overflow: hidden;
-  color: #2d3330;
-  font-weight: 650;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dark .mesh-tag-item span {
-  color: #f3f1ea;
-}
-
-.mesh-tag-item strong {
-  color: #1f6f68;
-}
-
-.dark .mesh-tag-item strong {
-  color: #8ed8c8;
+.mesh-post-node.platform-x circle {
+  fill: #e6e2d6;
 }
 
 .mesh-empty-state {
   height: 100%;
-  min-height: 560px;
+  min-height: 0;
 }
 
 .modal-backdrop {

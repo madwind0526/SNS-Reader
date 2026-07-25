@@ -1529,20 +1529,20 @@ function TopToolbar({
           <Database size={20} />
         </button>
         <button
-          className={view === "pdf-write" ? "icon-button active" : "icon-button"}
-          onClick={() => onViewChange("pdf-write", "PDF writer view opened.")}
-          title="PDF Write"
-          type="button"
-        >
-          <FileText size={20} />
-        </button>
-        <button
           className={view === "mesh-view" ? "icon-button active" : "icon-button"}
           onClick={() => onViewChange("mesh-view", "Mesh view opened.")}
           title="Mesh View"
           type="button"
         >
           <GitBranch size={20} />
+        </button>
+        <button
+          className={view === "pdf-write" ? "icon-button active" : "icon-button"}
+          onClick={() => onViewChange("pdf-write", "PDF writer view opened.")}
+          title="PDF Write"
+          type="button"
+        >
+          <FileText size={20} />
         </button>
         <button
           className={view === "settings" ? "icon-button active" : "icon-button"}
@@ -1555,7 +1555,7 @@ function TopToolbar({
         <button
           className="icon-button"
           onClick={onLoginBrowser}
-          title="로그인 브라우저"
+          title={"\uB85C\uADF8\uC778 \uBE0C\uB77C\uC6B0\uC800"}
           type="button"
         >
           <KeyRound size={20} />
@@ -1653,101 +1653,114 @@ function ConvertedFileLibrary({
 function MeshView({ posts }: { posts: ConvertedPost[] }) {
   const mesh = useMemo(() => {
     const genericTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
+    const postTagMap = new Map<string, string[]>();
     const tagCounts = new Map<string, number>();
 
     posts.forEach((post) => {
-      post.tags.forEach((tag) => {
-        const normalized = tag.replace(/^#/, "").trim();
+      const normalizedTags = Array.from(new Set(post.tags
+        .map((tag) => tag.replace(/^#/, "").trim())
+        .filter((tag) => tag && !genericTags.has(tag.toLowerCase()))));
 
-        if (!normalized || genericTags.has(normalized.toLowerCase())) {
-          return;
-        }
+      if (normalizedTags.length === 0) {
+        return;
+      }
 
-        tagCounts.set(normalized, (tagCounts.get(normalized) ?? 0) + 1);
+      postTagMap.set(post.id, normalizedTags);
+      normalizedTags.forEach((tag) => {
+        tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
       });
     });
 
-    const tags = Array.from(tagCounts.entries())
+    const topTags = Array.from(tagCounts.entries())
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .slice(0, 12);
-    const tagNames = new Set(tags.map(([tag]) => tag));
+      .slice(0, 18);
+    const tagNames = new Set(topTags.map(([tag]) => tag));
     const linkedPosts = posts
-      .filter((post) => post.tags.some((tag) => tagNames.has(tag.replace(/^#/, "").trim())))
-      .slice(0, 42);
-    const tagPositions = new Map<string, { x: number; y: number }>();
+      .filter((post) => (postTagMap.get(post.id) ?? []).some((tag) => tagNames.has(tag)))
+      .slice(0, 90);
     const postPositions = new Map<string, { x: number; y: number }>();
+    const edges: Array<{ from: string; to: string; sharedTags: string[]; weight: number }> = [];
     const centerX = 500;
     const centerY = 310;
 
-    tags.forEach(([tag], index) => {
-      const angle = (Math.PI * 2 * index) / Math.max(1, tags.length) - Math.PI / 2;
-      tagPositions.set(tag, {
-        x: centerX + Math.cos(angle) * 150,
-        y: centerY + Math.sin(angle) * 115
-      });
-    });
-
     linkedPosts.forEach((post, index) => {
       const angle = (Math.PI * 2 * index) / Math.max(1, linkedPosts.length) - Math.PI / 2;
-      const radius = index % 2 === 0 ? 255 : 218;
+      const radius = linkedPosts.length < 18 ? 180 : 270 - (index % 3) * 48;
       postPositions.set(post.id, {
         x: centerX + Math.cos(angle) * radius,
         y: centerY + Math.sin(angle) * radius
       });
     });
 
-    return { linkedPosts, postPositions, tagCounts, tagPositions, tags };
+    for (let leftIndex = 0; leftIndex < linkedPosts.length; leftIndex += 1) {
+      const leftPost = linkedPosts[leftIndex];
+      const leftTags = new Set((postTagMap.get(leftPost.id) ?? []).filter((tag) => tagNames.has(tag)));
+
+      for (let rightIndex = leftIndex + 1; rightIndex < linkedPosts.length; rightIndex += 1) {
+        const rightPost = linkedPosts[rightIndex];
+        const sharedTags = (postTagMap.get(rightPost.id) ?? []).filter((tag) => leftTags.has(tag));
+
+        if (sharedTags.length === 0) {
+          continue;
+        }
+
+        edges.push({
+          from: leftPost.id,
+          to: rightPost.id,
+          sharedTags,
+          weight: sharedTags.length
+        });
+      }
+    }
+
+    const visibleEdges = edges
+      .sort((left, right) => right.weight - left.weight || left.from.localeCompare(right.from))
+      .slice(0, 260);
+
+    return { linkedPosts, postPositions, topTags, visibleEdges };
   }, [posts]);
 
   return (
     <section className="mesh-page">
       <div className="library-header">
         <div>
-          <p className="eyebrow">TAG 연결망</p>
+          <p className="eyebrow">{"TAG \uC5F0\uACB0\uB9DD"}</p>
           <h1>Mesh View</h1>
         </div>
-        <span className="mesh-summary">{mesh.linkedPosts.length}개 글 / {mesh.tags.length}개 TAG</span>
+        <span className="mesh-summary">{mesh.linkedPosts.length}{"\uAC1C \uAE00 / "}{mesh.visibleEdges.length}{"\uAC1C \uC5F0\uACB0"}</span>
       </div>
 
       <div className="mesh-layout">
         <div className="mesh-canvas-panel">
-          {mesh.tags.length === 0 ? (
+          {mesh.linkedPosts.length === 0 ? (
             <div className="empty-state mesh-empty-state">
               <GitBranch size={28} />
-              <strong>연결할 TAG가 없습니다.</strong>
-              <span>요약과 TAG 생성을 먼저 실행하면 글 사이의 관계를 볼 수 있습니다.</span>
+              <strong>{"\uC5F0\uACB0\uD560 \uAE00\uC774 \uC5C6\uC2B5\uB2C8\uB2E4."}</strong>
+              <span>{"\uC694\uC57D\uACFC TAG \uC0DD\uC131\uC744 \uBA3C\uC800 \uC2E4\uD589\uD558\uBA74 \uAC19\uC740 TAG\uB97C \uAC00\uC9C4 \uAE00\uB4E4\uC774 \uC5F0\uACB0\uB429\uB2C8\uB2E4."}</span>
             </div>
           ) : (
-            <svg className="mesh-svg" viewBox="0 0 1000 620" role="img" aria-label="TAG 기반 글 연결망">
-              {mesh.linkedPosts.flatMap((post) => {
-                const postPosition = mesh.postPositions.get(post.id);
+            <svg className="mesh-svg" viewBox="0 0 1000 620" role="img" aria-label={"TAG \uAE30\uBC18 \uAE00 \uC5F0\uACB0\uB9DD"}>
+              {mesh.visibleEdges.map((edge) => {
+                const from = mesh.postPositions.get(edge.from);
+                const to = mesh.postPositions.get(edge.to);
 
-                if (!postPosition) {
-                  return [];
+                if (!from || !to) {
+                  return null;
                 }
 
-                return post.tags
-                  .map((tag) => tag.replace(/^#/, "").trim())
-                  .filter((tag) => mesh.tagPositions.has(tag))
-                  .slice(0, 4)
-                  .map((tag) => {
-                    const tagPosition = mesh.tagPositions.get(tag);
-
-                    if (!tagPosition) {
-                      return null;
-                    }
-
-                    return (
-                      <line
-                        className="mesh-edge"
-                        key={`${post.id}-${tag}`}
-                        x1={postPosition.x}
-                        x2={tagPosition.x}
-                        y1={postPosition.y}
-                        y2={tagPosition.y}
-                      />
-                    );
-                  });
+                return (
+                  <line
+                    className="mesh-edge"
+                    key={edge.from + "-" + edge.to}
+                    style={{ "--edge-weight": Math.min(4, edge.weight) } as CSSProperties}
+                    x1={from.x}
+                    x2={to.x}
+                    y1={from.y}
+                    y2={to.y}
+                  >
+                    <title>{edge.sharedTags.join(", ")}</title>
+                  </line>
+                );
               })}
               {mesh.linkedPosts.map((post) => {
                 const position = mesh.postPositions.get(post.id);
@@ -1757,47 +1770,15 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                 }
 
                 return (
-                  <g className={`mesh-post-node platform-${post.platform}`} key={post.id}>
-                    <circle cx={position.x} cy={position.y} r={7} />
-                    <title>{post.title || "Untitled Post"}</title>
-                  </g>
-                );
-              })}
-              {mesh.tags.map(([tag, count], index) => {
-                const position = mesh.tagPositions.get(tag);
-
-                if (!position) {
-                  return null;
-                }
-
-                return (
-                  <g className="mesh-tag-node" key={tag}>
-                    <circle cx={position.x} cy={position.y} r={18 + Math.min(14, count * 1.4)} />
-                    <text x={position.x} y={position.y - 2}>
-                      {tag}
-                    </text>
-                    <text className="mesh-tag-count" x={position.x} y={position.y + 14}>
-                      {count}
-                    </text>
-                    <title>{`${index + 1}. ${tag}: ${count}개 글`}</title>
+                  <g className={"mesh-post-node platform-" + post.platform} key={post.id}>
+                    <circle cx={position.x} cy={position.y} r={post.imageCount > 0 ? 8 : 6} />
+                    <title>{(post.title || "Untitled Post") + "\n" + post.date}</title>
                   </g>
                 );
               })}
             </svg>
           )}
         </div>
-
-        <aside className="mesh-side-panel">
-          <h2>Top TAG</h2>
-          <div className="mesh-tag-list">
-            {mesh.tags.map(([tag, count]) => (
-              <div className="mesh-tag-item" key={tag}>
-                <span>{tag}</span>
-                <strong>{count}</strong>
-              </div>
-            ))}
-          </div>
-        </aside>
       </div>
     </section>
   );
