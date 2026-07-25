@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -166,7 +167,6 @@ function unique(values) {
 
 function extractBalancedElement(html, startIndex, tagName = "div") {
   const tagPattern = new RegExp(`<\\/?${tagName}\\b[^>]*>`, "gi");
-  tagPattern.lastIndex = startIndex;
 
   let depth = 0;
 
@@ -197,6 +197,20 @@ function extractElementById(html, id) {
   }
 
   return extractBalancedElement(html, match.index, "div");
+}
+
+function extractElementByClass(html, className) {
+  const tagPattern = /<div\b[^>]*class=["']([^"']+)["'][^>]*>/gi;
+
+  for (const match of html.matchAll(tagPattern)) {
+    const classes = match[1].split(/\s+/);
+
+    if (classes.includes(className) && typeof match.index === "number") {
+      return extractBalancedElement(html, match.index, "div");
+    }
+  }
+
+  return "";
 }
 
 function htmlToText(html) {
@@ -244,12 +258,12 @@ function extractBody(html, logNo) {
   const direct = extractElementById(html, `post-view${logNo}`);
 
   if (direct) {
-    return htmlToText(direct);
+    return htmlToText(extractElementByClass(direct, "view") || direct);
   }
 
   const postViewArea = extractElementById(html, "postViewArea");
 
-  return htmlToText(postViewArea);
+  return htmlToText(extractElementByClass(postViewArea, "view") || postViewArea);
 }
 
 function isBlockedScrapBody(value) {
@@ -336,6 +350,47 @@ async function copyPostImages(imageUrls, mediaDir) {
   }
 
   return copiedImages;
+}
+
+async function walkMarkdownFiles(root, files = []) {
+  if (!existsSync(root)) {
+    return files;
+  }
+
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith("_")) {
+        continue;
+      }
+
+      await walkMarkdownFiles(fullPath, files);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+async function readExistingMemologIds(root) {
+  const files = await walkMarkdownFiles(root);
+  const ids = new Set();
+
+  for (const filePath of files) {
+    const markdown = await readFile(filePath, "utf8").catch(() => "");
+    const platform = markdown.match(/^platform:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const sourceType = markdown.match(/^source_type:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const importSource = markdown.match(/^import_source:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const postId = markdown.match(/^post_id:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+
+    if (platform === "naver-blog" && postId && (sourceType === "memolog" || importSource === "naver-memolog-crawl")) {
+      ids.add(postId);
+    }
+  }
+
+  return ids;
 }
 
 function parseMemologList(html, blogId, page) {
@@ -531,9 +586,17 @@ async function main() {
   const postDelayMs = args["post-delay-ms"] ? Number(args["post-delay-ms"]) : 300;
   const listPosts = await discoverMemologPosts({ blogId, limit, pageFrom, pageTo, pageDelayMs });
   const written = [];
+  const existingPostIds = await readExistingMemologIds(path.join(outputRoot, "Naver Blog"));
   let skipped = 0;
+  let skippedDuplicates = 0;
 
   for (const item of listPosts) {
+    if (existingPostIds.has(item.logNo)) {
+      skippedDuplicates += 1;
+      console.log(`Skipping duplicate Naver MemoLog post: ${item.logNo} ${item.title}`);
+      continue;
+    }
+
     console.log(`Importing ${written.length + skipped + 1}/${listPosts.length}: ${item.logNo} ${item.title}`);
     let post;
 
@@ -589,6 +652,7 @@ async function main() {
     );
 
     written.push(mdPath);
+    existingPostIds.add(post.logNo);
 
     if (postDelayMs) {
       await sleep(postDelayMs);
@@ -599,6 +663,7 @@ async function main() {
   console.log(`Discovered memolog posts: ${listPosts.length}`);
   console.log(`Written Markdown files: ${written.length}`);
   console.log(`Skipped memolog posts: ${skipped}`);
+  console.log(`Skipped duplicate memolog posts: ${skippedDuplicates}`);
   console.log(`Output folder: ${path.join(outputRoot, "Naver Blog")}`);
   written.forEach((filePath) => console.log(filePath));
 }

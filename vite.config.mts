@@ -613,23 +613,41 @@ function updateScriptForAccount(
       };
     }
     case "facebook": {
-      if (!runtimeEnv.FACEBOOK_ACCESS_TOKEN) {
+      if (runtimeEnv.FACEBOOK_ACCESS_TOKEN) {
+        const args = ["--limit", "50"];
+
+        if (sinceDate) {
+          args.push("--since", sinceDate);
+        }
+
         return {
-          warning:
-            "Facebook 건너뜀: FACEBOOK_ACCESS_TOKEN이 없습니다. Facebook 자동 업데이트는 Graph API 토큰 또는 추후 로그인 브라우저 커넥터가 필요합니다."
+          script: path.resolve(process.cwd(), "tools/import-facebook.mjs"),
+          args,
+          label: account.label || "Facebook"
         };
       }
 
-      const args = ["--limit", "50"];
+      if (runtimeEnv.SNS_READER_CDP_URL) {
+        const args = ["--platform", "facebook", "--limit", runtimeEnv.FACEBOOK_IMPORT_LIMIT || "3"];
 
-      if (sinceDate) {
-        args.push("--since", sinceDate);
+        if (account.url) {
+          args.push("--url", account.url);
+        }
+
+        if (sinceDate) {
+          args.push("--since", sinceDate);
+        }
+
+        return {
+          script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
+          args,
+          label: account.label || "Facebook"
+        };
       }
 
       return {
-        script: path.resolve(process.cwd(), "tools/import-facebook.mjs"),
-        args,
-        label: account.label || "Facebook"
+        warning:
+          "Facebook 건너뜀: FACEBOOK_ACCESS_TOKEN 또는 SNS_READER_CDP_URL이 필요합니다. Graph API 토큰을 쓰거나 Chrome remote debugging URL을 .env에 추가하세요."
       };
     }
     case "youtube": {
@@ -649,16 +667,54 @@ function updateScriptForAccount(
         label: account.label || "YouTube"
       };
     }
-    case "instagram":
+    case "instagram": {
+      if (runtimeEnv.SNS_READER_CDP_URL) {
+        const args = ["--platform", "instagram", "--limit", runtimeEnv.INSTAGRAM_IMPORT_LIMIT || "3"];
+
+        if (account.url) {
+          args.push("--url", account.url);
+        }
+
+        if (sinceDate) {
+          args.push("--since", sinceDate);
+        }
+
+        return {
+          script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
+          args,
+          label: account.label || "Instagram"
+        };
+      }
+
       return {
         warning:
-          "Instagram 건너뜀: archive import는 연결되어 있지만, 증분 업데이트는 공개 페이지에서 본문/미디어가 안정적으로 노출되지 않아 로그인 브라우저 커넥터가 필요합니다."
+          "Instagram 건너뜀: archive import는 연결되어 있고, 증분 업데이트에는 SNS_READER_CDP_URL로 연결된 로그인 Chrome 세션이 필요합니다."
       };
-    case "threads":
+    }
+    case "threads": {
+      if (runtimeEnv.SNS_READER_CDP_URL) {
+        const args = ["--platform", "threads", "--limit", "3"];
+
+        if (account.url) {
+          args.push("--url", account.url);
+        }
+
+        if (sinceDate) {
+          args.push("--since", sinceDate);
+        }
+
+        return {
+          script: path.resolve(process.cwd(), "tools/import-browser-session.mjs"),
+          args,
+          label: account.label || "Threads"
+        };
+      }
+
       return {
         warning:
-          "Threads 건너뜀: archive import는 연결되어 있지만, 증분 업데이트는 글 이어쓰기/댓글 구분을 위해 로그인 브라우저 커넥터가 필요합니다."
+          "Threads 건너뜀: archive import는 연결되어 있고, 증분 업데이트에는 SNS_READER_CDP_URL로 연결된 로그인 Chrome 세션이 필요합니다."
       };
+    }
     default:
       return null;
   }
