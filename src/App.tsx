@@ -1774,18 +1774,26 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       .slice(0, 260);
     const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
 
-    linkedPosts.forEach((post) => {
+    const layoutPosts = [...linkedPosts].sort((left, right) => {
+      const degreeDelta = (postDegrees.get(right.id) ?? 0) - (postDegrees.get(left.id) ?? 0);
+
+      return degreeDelta || left.dateIso.localeCompare(right.dateIso) || left.id.localeCompare(right.id);
+    });
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+    layoutPosts.forEach((post, index) => {
       const degree = postDegrees.get(post.id) ?? 0;
-      const degreePull = Math.sqrt(degree / maxDegree) * 0.34;
-      const angle = hashToUnit(post.id + post.dateIso, 17) * Math.PI * 2;
-      const radialSeed = Math.sqrt(hashToUnit(post.filePath || post.id, 31));
-      const radial = 0.1 + radialSeed * (0.86 - degreePull);
-      const jitterX = (hashToUnit(post.title + post.id, 47) - 0.5) * 42;
-      const jitterY = (hashToUnit(post.id + post.platform, 59) - 0.5) * 30;
+      const degreeRatio = Math.sqrt(degree / maxDegree);
+      const baseRadius = Math.sqrt((index + 0.5) / Math.max(1, layoutPosts.length));
+      const radialJitter = (hashToUnit(post.filePath || post.id, 31) - 0.5) * 0.08;
+      const radial = clampNumber(baseRadius * (1 - degreeRatio * 0.22) + radialJitter, 0.06, 0.98);
+      const angle = index * goldenAngle + hashToUnit(post.id + post.dateIso, 17) * 0.42;
+      const jitterX = (hashToUnit(post.title + post.id, 47) - 0.5) * 24;
+      const jitterY = (hashToUnit(post.id + post.platform, 59) - 0.5) * 18;
 
       postPositions.set(post.id, {
-        x: clampNumber(centerX + Math.cos(angle) * 390 * radial + jitterX, 72, 928),
-        y: clampNumber(centerY + Math.sin(angle) * 235 * radial + jitterY, 62, 558)
+        x: clampNumber(centerX + Math.cos(angle) * 430 * radial + jitterX, 58, 942),
+        y: clampNumber(centerY + Math.sin(angle) * 270 * radial + jitterY, 48, 572)
       });
     });
 
