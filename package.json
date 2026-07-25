@@ -15,6 +15,7 @@
     "import:naver-blog-crawl": "node tools/import-naver-blog.mjs && node tools/validate-sns-markdown.mjs",
     "update:facebook": "node tools/import-facebook.mjs && node tools/validate-sns-markdown.mjs",
     "update:youtube-community": "node tools/import-youtube-community.mjs && node tools/validate-sns-markdown.mjs",
+    "repair:naver-images": "node tools/repair-naver-og-images.mjs && node tools/validate-sns-markdown.mjs",
     "enrich:markdown": "node tools/enrich-sns-markdown.mjs",
     "validate:markdown": "node tools/validate-sns-markdown.mjs",
     "preview": "vite preview --host 127.0.0.1",

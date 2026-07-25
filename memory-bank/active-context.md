@@ -1,7 +1,7 @@
 # Active Context
 
 - Current Obsidian SNS root is `F:\Obsidian\PC-Madwind\SNS`.
-- Web UI loads generated Markdown cards only from the configured SNS Reader output folder through `/api/markdown-cards`; current API count is 3,628 total, 2,021 Facebook cards, and 1,578 Naver Blog cards.
+- Web UI loads generated Markdown cards only from the configured SNS Reader output folder through `/api/markdown-cards`; current Naver Blog API count is 1,898 cards, with 495 thumbnail-backed cards after missing-image repair.
 - Archive split rule is Facebook posts from `2010-01-01` onward and Naver Blog posts through `2009-12-31` to avoid duplicate source overlap.
 - Markdown validation passes with `tools/validate-sns-markdown.mjs`.
 - Archive Import UI/API is connected for Facebook, Instagram, Threads, and YouTube zip files through `/api/import-archive`; optional post-import enrichment is available through `/api/enrich-markdown`.
@@ -11,5 +11,6 @@
 - Naver Blog crawler skips blocked scraped posts, image-only posts, bodyless posts, and per-post fetch failures before saving Markdown.
 - Naver Blog historical text-card import now covers `2004-10-09` through `2011-12-31`, plus one 2026 latest-post test card.
 - Naver Blog MemoLog full import is complete with duplicate skipping and clean body extraction; current generated MemoLog count is 318.
+- Naver Blog missing-image repair has scanned existing `image_count: 0` Markdown and restored 369 poster images from usable `og:image` values without re-importing bodies.
 - Facebook export importer skips one-line birthday greeting posts before media copy/write; existing matching cards were removed from generated output.
 - Next focus: test CDP browser-session updates against a Chrome remote-debugging session, improve YouTube Community logged-in access, and add X archive importer after the X zip is ready.

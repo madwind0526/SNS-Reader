@@ -268,6 +268,17 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function normalizePathForCompare(filePath) {
+  return path.resolve(filePath).toLowerCase();
+}
+
+function isPathInside(childPath, parentPath) {
+  const child = normalizePathForCompare(childPath);
+  const parent = normalizePathForCompare(parentPath);
+
+  return child === parent || child.startsWith(`${parent}${path.sep}`);
+}
+
 function extractPostContainer(html) {
   const seMatch = html.match(/<div\b[^>]*class="[^"]*se-main-container[^"]*"[^>]*>/i);
   const oldMobileMatch = html.match(/<div\b[^>]*class="[^"]*post_ct[^"]*"[^>]*id="viewTypeSelector"[^>]*>/i);
@@ -332,7 +343,27 @@ function isBlockedScrapBody(value) {
   return /스크랩된 글은 재스크랩이 불가능합니다/.test(String(value || ""));
 }
 
-function extractImageUrls(containerHtml) {
+function extractOpenGraphImageUrl(html) {
+  const match = String(html || "").match(
+    /<meta\b[^>]*(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["'][^>]*>/i
+  );
+  const reversedMatch = String(html || "").match(
+    /<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["']og:image["'][^>]*>/i
+  );
+  const url = decodeHtml(match?.[1] || reversedMatch?.[1] || "");
+
+  if (
+    /^https?:\/\//i.test(url) &&
+    !url.includes("ssl.pstatic.net/static") &&
+    !url.includes("blogpfthumb-phinf.pstatic.net")
+  ) {
+    return url;
+  }
+
+  return "";
+}
+
+function extractImageUrls(containerHtml, fullHtml = "") {
   const urls = [];
 
   for (const match of containerHtml.matchAll(/<img\b[^>]*>/gi)) {
@@ -351,6 +382,12 @@ function extractImageUrls(containerHtml) {
         break;
       }
     }
+  }
+
+  const openGraphImageUrl = extractOpenGraphImageUrl(fullHtml);
+
+  if (openGraphImageUrl) {
+    urls.push(openGraphImageUrl);
   }
 
   return unique(urls);
@@ -429,21 +466,38 @@ async function walkMarkdownFiles(root, files = []) {
   return files;
 }
 
-async function readExistingPostIds(root) {
+async function readExistingPostEntries(root) {
   const files = await walkMarkdownFiles(root);
-  const ids = new Set();
+  const entries = new Map();
 
   for (const filePath of files) {
     const markdown = await readFile(filePath, "utf8").catch(() => "");
     const platform = markdown.match(/^platform:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
     const postId = markdown.match(/^post_id:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const mediaFolder = markdown.match(/^media_folder:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
+    const mediaPath = mediaFolder ? path.resolve(path.dirname(filePath), mediaFolder.replaceAll("/", path.sep)) : "";
 
     if (platform === "naver-blog" && postId) {
-      ids.add(postId);
+      const current = entries.get(postId) ?? [];
+
+      current.push({ filePath, mediaPath });
+      entries.set(postId, current);
     }
   }
 
-  return ids;
+  return entries;
+}
+
+async function removeExistingPostEntries(entries, root) {
+  for (const entry of entries) {
+    if (entry.filePath && isPathInside(entry.filePath, root)) {
+      await rm(entry.filePath, { force: true });
+    }
+
+    if (entry.mediaPath && isPathInside(entry.mediaPath, root)) {
+      await rm(entry.mediaPath, { recursive: true, force: true });
+    }
+  }
 }
 
 async function fetchTitleListPage(blogId, page, countPerPage = 30) {
@@ -623,7 +677,9 @@ async function main() {
   const pageTo = args["page-to"] ? Number(args["page-to"]) : 0;
   const pageDelayMs = args["page-delay-ms"] ? Number(args["page-delay-ms"]) : 400;
   const postDelayMs = args["post-delay-ms"] ? Number(args["post-delay-ms"]) : 300;
-  const existingPostIds = await readExistingPostIds(path.join(outputRoot, "Naver Blog"));
+  const force = Boolean(args.force);
+  const naverBlogRoot = path.join(outputRoot, "Naver Blog");
+  const existingPostEntries = await readExistingPostEntries(naverBlogRoot);
   let skippedDuplicates = 0;
   const rssItems =
     dateFrom || dateTo
@@ -634,7 +690,7 @@ async function main() {
   const written = [];
 
   for (const item of rssItems) {
-    if (existingPostIds.has(item.logNo)) {
+    if (!force && existingPostEntries.has(item.logNo)) {
       skippedDuplicates += 1;
       console.log(`Skipping duplicate Naver Blog post: ${item.logNo} ${item.title}`);
       continue;
@@ -658,7 +714,7 @@ async function main() {
       continue;
     }
 
-    const imageUrls = extractImageUrls(container);
+    const imageUrls = extractImageUrls(container, postHtml);
 
     if (!body) {
       console.log(
@@ -675,7 +731,6 @@ async function main() {
     const monthDir = path.join(outputRoot, "Naver Blog", parts.month);
     const mediaFolder = `assets/${stem}`;
     const mediaDir = path.join(monthDir, "assets", stem);
-    const copiedImages = await copyPostImages(imageUrls, mediaDir);
     const mdPath = path.join(monthDir, `${stem}.md`);
     const metaPath = path.join(mediaDir, "meta.json");
     const post = {
@@ -683,6 +738,12 @@ async function main() {
       blogId,
       date,
     };
+
+    if (force && existingPostEntries.has(item.logNo)) {
+      await removeExistingPostEntries(existingPostEntries.get(item.logNo), naverBlogRoot);
+    }
+
+    const copiedImages = await copyPostImages(imageUrls, mediaDir);
 
     await mkdir(monthDir, { recursive: true });
     await writeFile(mdPath, buildMarkdown({ post, account, body, mediaFolder, copiedImages }), "utf8");
@@ -703,7 +764,7 @@ async function main() {
     );
 
     written.push(mdPath);
-    existingPostIds.add(item.logNo);
+    existingPostEntries.set(item.logNo, [{ filePath: mdPath, mediaPath: mediaDir }]);
 
     if (postDelayMs) {
       await sleep(postDelayMs);
