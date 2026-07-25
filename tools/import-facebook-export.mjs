@@ -1,5 +1,6 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -191,6 +192,106 @@ function escapeYaml(value) {
   return String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function normalizeText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function readProperty(markdown, key) {
+  const match = markdown.match(new RegExp(`^${key}:\\s*"?([^"\\n]+)"?`, "m"));
+
+  return match?.[1]?.trim() ?? "";
+}
+
+function extractGeneratedSection(markdown, section) {
+  const sections = ["Date", "Body", "Images", "Videos", "Comments", "Summary", "Source"];
+  const sectionIndex = sections.findIndex((item) => item.toLowerCase() === section.toLowerCase());
+  const headingMatch = markdown.match(new RegExp(`(^|\\r?\\n)## ${section}\\s*\\r?\\n`, "i"));
+
+  if (!headingMatch || typeof headingMatch.index !== "number") {
+    return "";
+  }
+
+  const start = headingMatch.index + headingMatch[0].length;
+  const rest = markdown.slice(start);
+  const laterSections = sectionIndex >= 0 ? sections.slice(sectionIndex + 1) : sections;
+  const endOffsets = laterSections
+    .map((nextSection) => rest.match(new RegExp(`\\r?\\n## ${nextSection}\\s*\\r?\\n`, "i"))?.index)
+    .filter((index) => typeof index === "number");
+  const end = endOffsets.length ? start + Math.min(...endOffsets) : markdown.length;
+
+  return markdown.slice(start, end).trim();
+}
+
+function sectionMediaNames(markdown, section) {
+  return [...extractGeneratedSection(markdown, section).matchAll(/!\[\[([^\]]+)\]\]/g)]
+    .map((match) => path.basename(match[1]))
+    .sort()
+    .join("|");
+}
+
+function facebookExportPostId(post) {
+  const parts = formatDateParts(post.date);
+
+  return `facebook_export_${parts.fileDate}_${post.index}`;
+}
+
+function existingContentFingerprint(markdown) {
+  return createHash("sha1")
+    .update(
+      [
+        readProperty(markdown, "created"),
+        readProperty(markdown, "title"),
+        normalizeText(extractGeneratedSection(markdown, "Body")),
+        readProperty(markdown, "image_count"),
+        sectionMediaNames(markdown, "Images"),
+        sectionMediaNames(markdown, "Videos"),
+      ].join("\n")
+    )
+    .digest("hex");
+}
+
+function exportContentFingerprint({ post, copiedImages, copiedVideos }) {
+  const parts = formatDateParts(post.date);
+  const title = post.text.split(/\n+/).find(Boolean)?.slice(0, 80) || "Untitled Facebook Post";
+
+  return createHash("sha1")
+    .update(
+      [
+        parts.dateTime,
+        title,
+        normalizeText(post.text),
+        copiedImages.length,
+        copiedImages.slice().sort().join("|"),
+        copiedVideos.slice().sort().join("|"),
+      ].join("\n")
+    )
+    .digest("hex");
+}
+
+async function readExistingFacebookKeys(root) {
+  const files = await walkFiles(root, (_filePath, name) => name.toLowerCase().endsWith(".md"));
+  const postIds = new Set();
+  const fingerprints = new Set();
+
+  for (const filePath of files) {
+    const markdown = await readFile(filePath, "utf8").catch(() => "");
+
+    if (!/^platform:\s*facebook/m.test(markdown)) {
+      continue;
+    }
+
+    const postId = readProperty(markdown, "post_id");
+
+    if (postId) {
+      postIds.add(postId);
+    }
+
+    fingerprints.add(existingContentFingerprint(markdown));
+  }
+
+  return { postIds, fingerprints };
+}
+
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -369,7 +470,7 @@ function buildMarkdown({ post, account, mediaFolder, copiedImages, copiedVideos 
   const parts = formatDateParts(post.date);
   const title = post.text.split(/\n+/).find(Boolean)?.slice(0, 80) || "Untitled Facebook Post";
   const sourceUrl = account?.url || "";
-  const postId = `facebook_export_${parts.fileDate}_${post.index}`;
+  const postId = facebookExportPostId(post);
 
   return [
     "---",
@@ -464,6 +565,8 @@ async function main() {
   }
 
   const outputRoot = path.resolve(args.out || settings?.obsidianRootFolder || env.SNS_READER_OBSIDIAN_FOLDER || "./data/sample-md");
+  const facebookRoot = path.join(outputRoot, "facebook");
+  const existingKeys = await readExistingFacebookKeys(facebookRoot);
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sns-reader-facebook-export-"));
 
   try {
@@ -471,10 +574,18 @@ async function main() {
 
     const posts = await discoverPosts(tempRoot);
     const written = [];
+    let skippedDuplicates = 0;
 
     for (const post of posts) {
       if (isOneLineBirthdayGreeting(post.text)) {
         console.log(`Skipping one-line birthday greeting: ${formatDateParts(post.date).date} ${post.text.slice(0, 80)}`);
+        continue;
+      }
+
+      const postId = facebookExportPostId(post);
+
+      if (existingKeys.postIds.has(postId)) {
+        skippedDuplicates += 1;
         continue;
       }
 
@@ -485,6 +596,14 @@ async function main() {
       const mediaFolder = `assets/${stem}`;
       const mediaDir = path.join(monthDir, "assets", stem);
       const { copiedImages, copiedVideos } = await copyPostMedia({ extractRoot: tempRoot, mediaUris: post.mediaUris, mediaDir });
+      const fingerprint = exportContentFingerprint({ post, copiedImages, copiedVideos });
+
+      if (existingKeys.fingerprints.has(fingerprint)) {
+        await rm(mediaDir, { recursive: true, force: true });
+        skippedDuplicates += 1;
+        continue;
+      }
+
       const markdown = buildMarkdown({ post, account, mediaFolder, copiedImages, copiedVideos });
       const mdPath = path.join(monthDir, `${stem}.md`);
       const metaPath = path.join(mediaDir, "meta.json");
@@ -510,11 +629,14 @@ async function main() {
       );
 
       written.push(mdPath);
+      existingKeys.postIds.add(postId);
+      existingKeys.fingerprints.add(fingerprint);
     }
 
     console.log(`Facebook export archive: ${zipPath}`);
     console.log(`Discovered posts: ${posts.length}`);
     console.log(`Written Markdown files: ${written.length}`);
+    console.log(`Skipped duplicate posts: ${skippedDuplicates}`);
     console.log(`Output folder: ${path.join(outputRoot, "facebook")}`);
     written.slice(0, 5).forEach((filePath) => console.log(filePath));
   } finally {

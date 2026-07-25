@@ -98,6 +98,16 @@ function runNodeScript(scriptPath: string, args: string[] = []) {
   });
 }
 
+function runDedupeMarkdown(platform = "all") {
+  const args = ["--apply"];
+
+  if (platform && platform !== "all") {
+    args.push("--platform", platform);
+  }
+
+  return runNodeScript(path.resolve(process.cwd(), "tools/dedupe-sns-markdown.mjs"), args);
+}
+
 function runDetachedNodeScript(scriptPath: string, args: string[] = []) {
   const child = spawn(process.execPath, [scriptPath, ...args], {
     cwd: process.cwd(),
@@ -501,6 +511,7 @@ async function runSnsReadPipeline(settingsFilePath: string) {
   }
 
   const importResult = await runNodeScript(path.resolve(process.cwd(), "tools/import-facebook-export.mjs"));
+  const dedupeResult = await runDedupeMarkdown("facebook");
   const validateResult = await runNodeScript(path.resolve(process.cwd(), "tools/validate-sns-markdown.mjs"));
   const enrichResult = await runNodeScript(path.resolve(process.cwd(), "tools/enrich-sns-markdown.mjs"), [
     "--platform",
@@ -513,7 +524,16 @@ async function runSnsReadPipeline(settingsFilePath: string) {
     ok: true,
     message: `SNS Read complete. ${cardsPayload.cards.length} Markdown cards are available.`,
     cards: cardsPayload.cards.length,
-    output: [importResult.stdout, importResult.stderr, validateResult.stdout, validateResult.stderr, enrichResult.stdout, enrichResult.stderr]
+    output: [
+      importResult.stdout,
+      importResult.stderr,
+      dedupeResult.stdout,
+      dedupeResult.stderr,
+      validateResult.stdout,
+      validateResult.stderr,
+      enrichResult.stdout,
+      enrichResult.stderr
+    ]
       .filter(Boolean)
       .join("\n")
       .trim()
@@ -784,10 +804,13 @@ async function runSnsUpdatePipeline(settingsFilePath: string) {
     }
   }
 
+  let dedupeOutput = "";
   let validateOutput = "";
 
   if (completed.length > 0) {
+    const dedupeResult = await runDedupeMarkdown("all");
     const validateResult = await runNodeScript(path.resolve(process.cwd(), "tools/validate-sns-markdown.mjs"));
+    dedupeOutput = [dedupeResult.stdout, dedupeResult.stderr].filter(Boolean).join("\n").trim();
     validateOutput = [validateResult.stdout, validateResult.stderr].filter(Boolean).join("\n").trim();
   }
 
@@ -804,7 +827,7 @@ async function runSnsUpdatePipeline(settingsFilePath: string) {
     message: messageParts.join(" "),
     targets,
     cards: updatedCardsPayload.cards.length,
-    output: [...outputs, validateOutput].filter(Boolean).join("\n").trim()
+    output: [...outputs, dedupeOutput, validateOutput].filter(Boolean).join("\n").trim()
   };
 }
 
@@ -1053,6 +1076,7 @@ export default defineConfig(() => {
               }
 
               const importResult = await runNodeScript(importArgs.script, importArgs.args);
+              const dedupeResult = await runDedupeMarkdown(platform);
               const validateResult = await runNodeScript(path.resolve(process.cwd(), "tools/validate-sns-markdown.mjs"));
               const enrichResult = enrich
                 ? await runNodeScript(path.resolve(process.cwd(), "tools/enrich-sns-markdown.mjs"), [
@@ -1065,6 +1089,8 @@ export default defineConfig(() => {
               const output = [
                 importResult.stdout,
                 importResult.stderr,
+                dedupeResult.stdout,
+                dedupeResult.stderr,
                 validateResult.stdout,
                 validateResult.stderr,
                 enrichResult.stdout,
