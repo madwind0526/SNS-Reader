@@ -253,6 +253,21 @@ function getSemanticTags(post: ConvertedPost) {
     .filter((tag) => tag && !genericMeshTags.has(tag.toLowerCase()))));
 }
 
+function hashToUnit(value: string, salt: number) {
+  let hash = 2166136261 ^ salt;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0) / 4294967295;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function buildConnectionCounts(posts: ConvertedPost[]) {
   const connectedPostIds = new Map<string, Set<string>>();
   const postsByTag = new Map<string, string[]>();
@@ -1731,15 +1746,6 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
     const centerX = 500;
     const centerY = 310;
 
-    linkedPosts.forEach((post, index) => {
-      const angle = (Math.PI * 2 * index) / Math.max(1, linkedPosts.length) - Math.PI / 2;
-      const radius = linkedPosts.length < 18 ? 180 : 270 - (index % 3) * 48;
-      postPositions.set(post.id, {
-        x: centerX + Math.cos(angle) * radius,
-        y: centerY + Math.sin(angle) * radius
-      });
-    });
-
     for (let leftIndex = 0; leftIndex < linkedPosts.length; leftIndex += 1) {
       const leftPost = linkedPosts[leftIndex];
       const leftTags = new Set((postTagMap.get(leftPost.id) ?? []).filter((tag) => tagNames.has(tag)));
@@ -1767,6 +1773,21 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       .sort((left, right) => right.weight - left.weight || left.from.localeCompare(right.from))
       .slice(0, 260);
     const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
+
+    linkedPosts.forEach((post) => {
+      const degree = postDegrees.get(post.id) ?? 0;
+      const degreePull = Math.sqrt(degree / maxDegree) * 0.34;
+      const angle = hashToUnit(post.id + post.dateIso, 17) * Math.PI * 2;
+      const radialSeed = Math.sqrt(hashToUnit(post.filePath || post.id, 31));
+      const radial = 0.1 + radialSeed * (0.86 - degreePull);
+      const jitterX = (hashToUnit(post.title + post.id, 47) - 0.5) * 42;
+      const jitterY = (hashToUnit(post.id + post.platform, 59) - 0.5) * 30;
+
+      postPositions.set(post.id, {
+        x: clampNumber(centerX + Math.cos(angle) * 390 * radial + jitterX, 72, 928),
+        y: clampNumber(centerY + Math.sin(angle) * 235 * radial + jitterY, 62, 558)
+      });
+    });
 
     return { linkedPosts, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
   }, [posts]);
@@ -1825,7 +1846,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                     <circle
                       cx={position.x}
                       cy={position.y}
-                      r={5 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 13}
+                      r={2.5 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 6.5}
                     />
                     <title>{(post.title || "Untitled Post") + "\n" + post.date + "\nConnections: " + (mesh.postDegrees.get(post.id) ?? 0)}</title>
                   </g>
