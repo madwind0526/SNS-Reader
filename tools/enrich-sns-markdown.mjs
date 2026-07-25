@@ -1,4 +1,4 @@
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -10,7 +10,10 @@ const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 const DEFAULT_OPENAI_MODEL = "gpt-5.6-terra";
 const DEFAULT_BODY_LIMIT = Number(process.env.SNS_READER_LLM_BODY_LIMIT || 6000);
-const DEFAULT_TIMEOUT_MS = Number(process.env.SNS_READER_LLM_TIMEOUT_MS || 120000);
+const DEFAULT_BATCH_BODY_LIMIT = Number(process.env.SNS_READER_LLM_BATCH_BODY_LIMIT || 2500);
+const DEFAULT_TIMEOUT_MS = Number(process.env.SNS_READER_LLM_TIMEOUT_MS || 180000);
+const DEFAULT_OUTPUT_TOKENS = Number(process.env.SNS_READER_LLM_OUTPUT_TOKENS || 900);
+const DEFAULT_BATCH_OUTPUT_TOKENS = Number(process.env.SNS_READER_LLM_BATCH_OUTPUT_TOKENS || 3600);
 
 function parseArgs(argv) {
   const args = {};
@@ -248,27 +251,51 @@ function localFallback(title, body) {
   const summary = [
     normalized[0] || title || "본문이 비어 있는 SNS 글입니다.",
     normalized.find((line) => line !== normalized[0] && line.length > 12) ||
-      "LLM 연결 전 로컬 미리보기로 생성한 요약입니다.",
+      "LLM 연결 없이 로컬 미리보기로 생성한 요약입니다.",
   ].slice(0, 2);
-  const words =
-    `${title} ${body}`.match(/[A-Za-z][A-Za-z0-9-]{2,}|[가-힣][가-힣A-Za-z0-9-]{1,}/g) ?? [];
+  const words = `${title} ${body}`.match(/[A-Za-z][A-Za-z0-9-]{2,}|[가-힣][가-힣A-Za-z0-9-]{1,}/g) ?? [];
   const tags = Array.from(new Set(words.map(cleanTag).filter((word) => word.length <= 24))).slice(0, 10);
 
   return { summary, tags };
 }
 
+function lowInformationFallback({ title, date, platform, body }) {
+  const label = collapseInlineText(String(body || title || "짧은 SNS 기록").replace(/^\[|\]$/g, ""));
+  const platformLabel = platform ? cleanTag(platform) : "SNS";
+  const dated = date ? `${date}에 남긴` : "날짜가 기록된";
+
+  return {
+    summary: [
+      `${dated} 짧은 ${platformLabel} 게시물로, 원문에는 "${label}" 정도의 제한된 내용만 남아 있습니다.`,
+      "구체적인 사건이나 감정은 충분히 복원되지 않아 링크성 기록 또는 원문 보강 대상으로 아카이브합니다.",
+    ],
+    tags: [platformLabel, "짧은기록", "링크성게시물", "본문부족", "아카이브", "원문보강"],
+  };
+}
+
+function isLowInformationBody(body) {
+  const text = String(body || "").trim();
+  const compact = text.replace(/\s+/g, "");
+
+  return compact.length < 24 || /^\[[^\]]+\]$/.test(compact) || /^https?:\/\/\S+$/i.test(compact);
+}
+
+function collapseInlineText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
 function buildPrompt({ title, date, platform, account, source, body }) {
   return [
-    "다음 SNS 게시글 본문을 읽고 Obsidian/PDF 아카이브용 2줄 요약과 추천 TAG를 작성해줘.",
+    "다음 SNS 게시글 본문을 읽고 Obsidian/PDF 아카이브용 2줄 요약과 추천 TAG를 작성해 주세요.",
     "",
-    "반드시 아래 JSON 형식만 출력해.",
+    "반드시 아래 JSON 형식만 출력하세요.",
     "{\"summary\":[\"첫 번째 요약 문장\",\"두 번째 요약 문장\"],\"tags\":[\"태그1\",\"태그2\"]}",
     "",
     "요약 규칙:",
     "- summary는 한국어 2문장으로 작성한다.",
     "- 각 문장은 45자 이상 140자 이하로 쓴다.",
     "- 첫 줄은 글의 핵심 사건, 목적, 주제를 담는다.",
-    "- 둘째 줄은 구현 과정, 어려움, 감정, 의미 중 본문에 실제로 있는 내용을 담는다.",
+    "- 둘째 줄은 구현 과정, 고민, 감정, 한계 중 본문에 실제로 있는 내용을 담는다.",
     "- 본문에 있는 고유명사, 기술명, 링크, 서비스명은 중요하면 그대로 반영한다.",
     "- 본문에 없는 내용은 추측하지 않는다.",
     "- '게시글입니다', '기록입니다' 같은 빈 표현만으로 끝내지 않는다.",
@@ -279,7 +306,7 @@ function buildPrompt({ title, date, platform, account, source, body }) {
     "- 한국어 태그는 공백과 하이픈 없이 붙여 쓴다. 예: 쿠키관리, 서버구축, 개발일지",
     "- 영어/기술명 태그는 원래 표기를 유지한다. 예: yt-dlp, GitHub, ChatGPT",
     "- Facebook, SNS 같은 플랫폼 일반 태그는 글의 핵심 주제일 때만 사용한다.",
-    "- 본문 내용을 대표하는 구체적인 명사형 태그를 우선한다.",
+    "- 본문 내용에 대응하는 구체적인 명사형 태그를 우선한다.",
     "",
     `platform: ${platform || ""}`,
     `account: ${account || ""}`,
@@ -289,6 +316,45 @@ function buildPrompt({ title, date, platform, account, source, body }) {
     "",
     "body:",
     truncateText(body, DEFAULT_BODY_LIMIT),
+  ].join("\n");
+}
+
+function buildBatchPrompt(posts) {
+  const serializedPosts = posts.map((post) => ({
+    id: post.id,
+    platform: post.platform || "",
+    account: post.account || "",
+    date: post.date || "",
+    title: post.title || "",
+    source: post.source || "",
+    body: truncateText(post.body, DEFAULT_BATCH_BODY_LIMIT),
+  }));
+
+  return [
+    "아래 SNS 게시글 여러 개를 각각 독립적으로 읽고 Obsidian/PDF 아카이브용 2줄 요약과 추천 TAG를 작성해 주세요.",
+    "",
+    "반드시 아래 JSON 형식만 출력하세요.",
+    "{\"items\":[{\"id\":\"p1\",\"summary\":[\"첫 번째 요약 문장\",\"두 번째 요약 문장\"],\"tags\":[\"태그1\",\"태그2\"]}]}",
+    "",
+    "요약 규칙:",
+    "- 각 items 항목은 입력 posts의 id와 정확히 일치해야 한다.",
+    "- summary는 한국어 2문장으로 작성한다.",
+    "- 각 문장은 45자 이상 140자 이하로 쓴다.",
+    "- 첫 줄은 글의 핵심 사건, 목적, 주제를 담는다.",
+    "- 둘째 줄은 구현 과정, 고민, 감정, 한계 중 본문에 실제로 있는 내용을 담는다.",
+    "- 본문에 있는 고유명사, 기술명, 링크, 서비스명은 중요하면 그대로 반영한다.",
+    "- 본문에 없는 내용은 추측하지 않는다.",
+    "- 서로 다른 게시글의 내용을 섞지 않는다.",
+    "",
+    "TAG 규칙:",
+    "- tags는 6개 이상 10개 이하로 작성한다.",
+    "- #은 붙이지 않는다.",
+    "- 한국어 태그는 공백과 하이픈 없이 붙여 쓴다.",
+    "- 영어/기술명 태그는 원래 표기를 유지한다.",
+    "- Facebook, SNS 같은 플랫폼 일반 태그는 글의 핵심 주제일 때만 사용한다.",
+    "",
+    "posts:",
+    JSON.stringify(serializedPosts, null, 2),
   ].join("\n");
 }
 
@@ -340,11 +406,72 @@ function normalizeLlmResult(value) {
     : [];
   const tags = Array.isArray(parsed.tags) ? parsed.tags.map(cleanTag).filter(Boolean).slice(0, 10) : [];
 
+  if (summary.length === 1) {
+    const split = splitSummaryLine(summary[0]);
+
+    if (split.length === 2) {
+      summary.splice(0, summary.length, ...split);
+    }
+  }
+
   if (summary.length !== 2) {
-    throw new Error("LLM response must include exactly two summary lines.");
+    throw new Error("LLM response must include two summary lines.");
   }
 
   return { summary, tags };
+}
+
+function normalizeBatchLlmResult(value, posts) {
+  const parsed = typeof value === "string" ? parseJsonPayload(value) : value;
+  const items = Array.isArray(parsed.items) ? parsed.items : Array.isArray(parsed) ? parsed : [];
+  const expectedIds = new Set(posts.map((post) => post.id));
+  const results = new Map();
+
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+
+    if (!expectedIds.has(id)) {
+      continue;
+    }
+
+    results.set(id, normalizeLlmResult(item));
+  }
+
+  const missingIds = posts.map((post) => post.id).filter((id) => !results.has(id));
+
+  if (missingIds.length) {
+    throw new Error(`LLM batch response missed ${missingIds.length} item(s): ${missingIds.join(", ")}`);
+  }
+
+  return results;
+}
+
+function splitSummaryLine(line) {
+  const text = String(line || "").trim();
+
+  if (!text) {
+    return [];
+  }
+
+  const sentenceSplit = text
+    .split(/(?<=[.!?。！？다요음임됨함함니다습니다])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (sentenceSplit.length >= 2) {
+    return [sentenceSplit[0], sentenceSplit.slice(1).join(" ")].map((part) => part.trim()).filter(Boolean);
+  }
+
+  if (text.length >= 90) {
+    const midpoint = Math.floor(text.length / 2);
+    const leftSpace = text.lastIndexOf(" ", midpoint);
+    const rightSpace = text.indexOf(" ", midpoint);
+    const splitAt = leftSpace > 35 ? leftSpace : rightSpace > 0 ? rightSpace : midpoint;
+
+    return [text.slice(0, splitAt).trim(), text.slice(splitAt).trim()].filter(Boolean);
+  }
+
+  return [];
 }
 
 async function readJsonResponseBody(response) {
@@ -483,6 +610,7 @@ async function callOllamaChatApi(config, post) {
       format: "json",
       options: {
         temperature: 0.2,
+        num_predict: DEFAULT_OUTPUT_TOKENS,
       },
       messages: [
         {
@@ -503,7 +631,151 @@ async function callOllamaChatApi(config, post) {
     throw new Error(data.error || data.error?.message || `Ollama chat API failed with HTTP ${response.status}.`);
   }
 
+  const content = data.message?.content || "";
+
+  try {
+    return normalizeLlmResult(content);
+  } catch {
+    return repairOllamaJson(config, post, content);
+  }
+}
+
+async function repairOllamaJson(config, post, invalidContent) {
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (config.apiKey) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
+
+  const response = await fetchWithTimeout(`${config.baseUrl.replace(/\/$/, "")}/api/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: config.model,
+      stream: false,
+      format: "json",
+      options: {
+        temperature: 0,
+        num_predict: DEFAULT_OUTPUT_TOKENS,
+      },
+      messages: [
+        {
+          role: "system",
+          content: "Return only valid JSON. No markdown fences, no commentary.",
+        },
+        {
+          role: "user",
+          content: [
+            "아래 SNS 글과 이전 LLM 응답을 참고해서 valid JSON만 다시 작성하세요.",
+            "{\"summary\":[\"첫 번째 요약 문장\",\"두 번째 요약 문장\"],\"tags\":[\"태그1\",\"태그2\"]}",
+            "",
+            "조건:",
+            "- summary는 한국어 2문장",
+            "- tags는 # 없이 6개 이상 10개 이하",
+            "- 본문에 없는 내용은 추가하지 않음",
+            "",
+            `title: ${post.title || ""}`,
+            `date: ${post.date || ""}`,
+            "",
+            "previous invalid response:",
+            truncateText(invalidContent, 1800),
+            "",
+            "body:",
+            truncateText(post.body, 3000),
+          ].join("\n"),
+        },
+      ],
+    }),
+  });
+
+  const data = await readJsonResponseBody(response);
+
+  if (!response.ok) {
+    throw new Error(data.error || data.error?.message || `Ollama JSON repair failed with HTTP ${response.status}.`);
+  }
+
   return normalizeLlmResult(data.message?.content || "");
+}
+
+async function callOllamaBatchChatApi(config, posts) {
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (config.apiKey) {
+    headers.Authorization = `Bearer ${config.apiKey}`;
+  }
+
+  const response = await fetchWithTimeout(`${config.baseUrl.replace(/\/$/, "")}/api/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: config.model,
+      stream: false,
+      format: "json",
+      options: {
+        temperature: 0.15,
+        num_predict: Math.max(DEFAULT_BATCH_OUTPUT_TOKENS, posts.length * 420),
+      },
+      messages: [
+        {
+          role: "system",
+          content: "You create faithful Korean summaries and tags from SNS post text. Return only valid JSON.",
+        },
+        {
+          role: "user",
+          content: buildBatchPrompt(posts),
+        },
+      ],
+    }),
+  });
+
+  const data = await readJsonResponseBody(response);
+
+  if (!response.ok) {
+    throw new Error(data.error || data.error?.message || `Ollama batch chat API failed with HTTP ${response.status}.`);
+  }
+
+  return normalizeBatchLlmResult(data.message?.content || "", posts);
+}
+
+async function enrichBatchWithLlm(config, posts) {
+  if (!posts.length) {
+    return new Map();
+  }
+
+  if (config.mode !== "ollama") {
+    throw new Error("Batch enrichment currently supports Ollama only.");
+  }
+
+  if (!config.baseUrl) {
+    throw new Error("Missing Ollama base URL. Set OLLAMA_BASE_URL in .env.");
+  }
+
+  if (!config.model) {
+    throw new Error(`Missing model for ${config.providerId}. Set SNS_READER_LLM_MODEL or the matching VITE_LLM_*_MODEL value.`);
+  }
+
+  return callOllamaBatchChatApi(config, posts);
+}
+
+async function enrichBatchResilient(config, posts, retries) {
+  try {
+    return await withRetry(() => enrichBatchWithLlm(config, posts), retries);
+  } catch (error) {
+    if (posts.length <= 1) {
+      throw error;
+    }
+
+    const midpoint = Math.ceil(posts.length / 2);
+    console.warn(`Batch failed for ${posts.length} item(s), splitting into ${midpoint} and ${posts.length - midpoint}: ${error.message}`);
+    const left = await enrichBatchResilient(config, posts.slice(0, midpoint), retries);
+    const right = await enrichBatchResilient(config, posts.slice(midpoint), retries);
+
+    return new Map([...left, ...right]);
+  }
 }
 
 async function enrichWithLlm(config, post) {
@@ -539,7 +811,11 @@ async function enrichWithLlm(config, post) {
 }
 
 function yamlQuote(value) {
-  return `"${String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return `"${collapseInlineText(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function isFrontmatterKeyLine(line) {
+  return /^[A-Za-z0-9_-]+:\s*/.test(line);
 }
 
 function replaceFrontmatterField(frontmatter, key, value) {
@@ -560,8 +836,14 @@ function replaceFrontmatterField(frontmatter, key, value) {
         output.push(`${key}: ${value}`);
       }
 
-      while (lines[index + 1]?.match(/^\s*-\s+/)) {
-        index += 1;
+      if (Array.isArray(value)) {
+        while (lines[index + 1] !== undefined && !isFrontmatterKeyLine(lines[index + 1])) {
+          index += 1;
+        }
+      } else {
+        while (lines[index + 1]?.match(/^\s+/)) {
+          index += 1;
+        }
       }
     } else {
       output.push(line);
@@ -591,14 +873,14 @@ function upsertFrontmatter(markdown, summary, tags, config) {
   frontmatter = replaceFrontmatterField(frontmatter, "has_summary", "true");
   frontmatter = replaceFrontmatterField(frontmatter, "summary_provider", yamlQuote(config.mode === "local" ? "local-preview" : config.providerId));
   frontmatter = replaceFrontmatterField(frontmatter, "summary_model", yamlQuote(config.model || "local-preview"));
-  frontmatter = replaceFrontmatterField(frontmatter, "summary", summary.map(yamlQuote));
+  frontmatter = replaceFrontmatterField(frontmatter, "summary", summary.map(collapseInlineText).map(yamlQuote));
   frontmatter = replaceFrontmatterField(frontmatter, "tags", tags.map(yamlQuote));
 
   return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---/, `---\n${frontmatter}\n---`);
 }
 
 function upsertSummarySection(markdown, summary) {
-  const section = `## Summary\n\n${summary.map((line) => `- ${line}`).join("\n")}`;
+  const section = `## Summary\n\n${summary.map((line) => `- ${collapseInlineText(line)}`).join("\n")}`;
 
   if (/## Summary\s*\n[\s\S]*?(?=\n## |$)/i.test(markdown)) {
     return markdown.replace(/## Summary\s*\n[\s\S]*?(?=\n## |$)/i, section);
@@ -654,7 +936,8 @@ function isAlreadyEnriched(markdown, config) {
   return (
     readScalar(markdown, "has_summary") === "true" &&
     readScalar(markdown, "summary_provider") === expectedProvider &&
-    readScalar(markdown, "summary_model") === expectedModel
+    readScalar(markdown, "summary_model") === expectedModel &&
+    hasAnyExistingSummaryAndTags(markdown)
   );
 }
 
@@ -667,7 +950,11 @@ function hasMeaningfulSummary(markdown) {
   const lines = frontmatterSummary.length ? frontmatterSummary : sectionLines;
   const text = lines.join(" ");
 
-  return lines.length >= 2 && !/summary will be generated/i.test(text);
+  return (
+    lines.length >= 2 &&
+    !/summary will be generated/i.test(text) &&
+    !/요약할 수 없습니다|요약이 어렵|내용이 제공되지|본문 내용이 제공되지|정보가 부족|정보 부족|원본 SNS 게시글의 내용을 제공/i.test(text)
+  );
 }
 
 function hasMeaningfulTags(markdown) {
@@ -688,18 +975,148 @@ function isArchivedFile(root, file) {
     .some((part) => part.toLowerCase() === "_archive");
 }
 
+async function appendJsonl(file, record) {
+  if (!file) {
+    return;
+  }
+
+  await mkdir(path.dirname(file), { recursive: true });
+  await appendFile(file, `${JSON.stringify(record)}\n`, "utf8");
+}
+
+function resolveResultFile(root, relativeFile) {
+  const resolved = path.resolve(root, relativeFile);
+  const relative = path.relative(root, resolved);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Result file path escapes root: ${relativeFile}`);
+  }
+
+  return resolved;
+}
+
+async function applyResults(root, resultsFile, config) {
+  const raw = await readFile(resultsFile, "utf8");
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  let applied = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const line of lines) {
+    let record;
+
+    try {
+      record = JSON.parse(line);
+    } catch {
+      failed += 1;
+      continue;
+    }
+
+    if (record.error || !Array.isArray(record.summary) || !Array.isArray(record.tags)) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const file = resolveResultFile(root, record.file);
+      const markdown = await readFile(file, "utf8");
+      const nextMarkdown = upsertSummarySection(upsertFrontmatter(markdown, record.summary, record.tags, config), record.summary);
+
+      if (nextMarkdown !== markdown) {
+        await writeFile(file, `${nextMarkdown.trim()}\n`, "utf8");
+        applied += 1;
+      } else {
+        skipped += 1;
+      }
+    } catch (error) {
+      failed += 1;
+      console.error(`Failed to apply ${record.file || "(unknown)"}: ${error.message}`);
+    }
+  }
+
+  console.log(`Applied ${applied} result records from ${resultsFile}. Skipped ${skipped}. Failed ${failed}.`);
+}
+
+async function writeEnrichmentResult({ root, file, markdown, post, result, config, args, resultsFile }) {
+  const relativeFile = path.relative(root, file);
+
+  await appendJsonl(resultsFile, {
+    file: relativeFile,
+    summary: result.summary,
+    tags: result.tags,
+    provider: config.mode === "local" ? "local-preview" : config.providerId,
+    model: config.model || "local-preview",
+    generated_at: new Date().toISOString(),
+  });
+
+  if (args["no-apply"]) {
+    return true;
+  }
+
+  const nextMarkdown = upsertSummarySection(upsertFrontmatter(markdown, result.summary, result.tags, config), result.summary);
+
+  if (nextMarkdown !== markdown) {
+    await writeFile(file, `${nextMarkdown.trim()}\n`, "utf8");
+    return true;
+  }
+
+  return false;
+}
+
+async function writeErrorResult({ root, file, error, config, resultsFile }) {
+  await appendJsonl(resultsFile, {
+    file: path.relative(root, file),
+    error: error.message,
+    provider: config.mode === "local" ? "local-preview" : config.providerId,
+    model: config.model || "local-preview",
+    generated_at: new Date().toISOString(),
+  });
+}
+
+async function withRetry(task, retries) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < retries) {
+        console.warn(`Retrying after LLM error (${attempt + 1}/${retries}): ${error.message}`);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const env = await loadEnv();
   const settings = await loadSettings(env);
   const root = path.resolve(args.root || settings.obsidianRootFolder || env.SNS_READER_OBSIDIAN_FOLDER || DEFAULT_MARKDOWN_ROOT);
-  const platform = args.platform || "facebook";
+  const platform = args.platform || "all";
   const limit = args.limit ? Number(args.limit) : Number.POSITIVE_INFINITY;
+  const retries = args.retries ? Number(args.retries) : 1;
   const config = getLlmConfig(env, settings, args);
+  const batchSize =
+    config.mode === "ollama" && args["batch-size"] ? Math.max(1, Number(args["batch-size"]) || 1) : 1;
+  const resultsFile = args["results-file"] ? path.resolve(workspaceRoot, args["results-file"]) : "";
+  const applyOnlyFile = args["apply-results"] ? path.resolve(workspaceRoot, args["apply-results"]) : "";
+
+  if (applyOnlyFile) {
+    await applyResults(root, applyOnlyFile, config);
+    return;
+  }
+
   const files = (await walkMarkdownFiles(root)).sort();
   let updated = 0;
   let skipped = 0;
   let alreadyEnriched = 0;
+  let failed = 0;
+  let candidateIndex = 0;
+  const pendingBatch = [];
 
   console.log(
     config.mode === "local"
@@ -707,8 +1124,54 @@ async function main() {
       : `Enriching Markdown with ${config.providerId} (${config.model}) under ${root}.`
   );
 
+  async function flushBatch() {
+    if (!pendingBatch.length) {
+      return;
+    }
+
+    const batch = pendingBatch.splice(0, pendingBatch.length);
+    const label = `${path.relative(root, batch[0].file)} ... ${path.relative(root, batch[batch.length - 1].file)}`;
+    console.log(`Enriching batch of ${batch.length}: ${label}.`);
+
+    try {
+      const resultMap = await enrichBatchResilient(
+        config,
+        batch.map((item) => item.post),
+        retries
+      );
+
+      for (const item of batch) {
+        const result = resultMap.get(item.post.id);
+        const changed = await writeEnrichmentResult({
+          root,
+          file: item.file,
+          markdown: item.markdown,
+          post: item.post,
+          result,
+          config,
+          args,
+          resultsFile,
+        });
+
+        if (changed) {
+          updated += 1;
+        }
+
+        console.log(args["no-apply"] ? `Generated ${path.relative(root, item.file)}.` : `Updated ${path.relative(root, item.file)}.`);
+      }
+    } catch (error) {
+      failed += batch.length;
+
+      for (const item of batch) {
+        await writeErrorResult({ root, file: item.file, error, config, resultsFile });
+      }
+
+      console.error(`Failed batch of ${batch.length}: ${error.message}`);
+    }
+  }
+
   for (const file of files) {
-    if (updated >= limit) {
+    if (updated + pendingBatch.length >= limit) {
       break;
     }
 
@@ -752,19 +1215,61 @@ async function main() {
       body,
     };
     console.log(`Enriching ${path.relative(root, file)}.`);
-    const result = config.mode === "local" ? localFallback(post.title, post.body) : await enrichWithLlm(config, post);
-    const nextMarkdown = upsertSummarySection(upsertFrontmatter(markdown, result.summary, result.tags, config), result.summary);
+    const relativeFile = path.relative(root, file);
+    const lowInformation = isLowInformationBody(post.body);
 
-    if (nextMarkdown !== markdown) {
-      await writeFile(file, `${nextMarkdown.trim()}\n`, "utf8");
-      updated += 1;
+    if (batchSize > 1 && !lowInformation && config.mode !== "local") {
+      candidateIndex += 1;
+      pendingBatch.push({
+        file,
+        markdown,
+        post: {
+          ...post,
+          id: `p${candidateIndex}`,
+        },
+      });
+
+      if (pendingBatch.length >= batchSize) {
+        await flushBatch();
+      }
+
+      continue;
     }
 
-    console.log(`Updated ${path.relative(root, file)}.`);
+    try {
+      const result = lowInformation
+        ? lowInformationFallback(post)
+        : config.mode === "local"
+          ? localFallback(post.title, post.body)
+          : await withRetry(() => enrichWithLlm(config, post), retries);
+
+      const changed = await writeEnrichmentResult({
+        root,
+        file,
+        markdown,
+        post,
+        result,
+        config,
+        args,
+        resultsFile,
+      });
+
+      if (changed) {
+        updated += 1;
+      }
+
+      console.log(args["no-apply"] ? `Generated ${relativeFile}.` : `Updated ${relativeFile}.`);
+    } catch (error) {
+      failed += 1;
+      await writeErrorResult({ root, file, error, config, resultsFile });
+      console.error(`Failed ${relativeFile}: ${error.message}`);
+    }
   }
 
+  await flushBatch();
+
   console.log(
-    `Updated ${updated} Markdown files under ${root}. Skipped ${skipped} empty-body files. Already enriched ${alreadyEnriched} files.`
+    `Updated ${updated} Markdown files under ${root}. Skipped ${skipped} empty-body files. Already enriched ${alreadyEnriched} files. Failed ${failed} files.`
   );
 }
 
