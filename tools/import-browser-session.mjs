@@ -298,6 +298,90 @@ function extractThreadsBlocks(text, account, limit) {
   return mergeThreadsContinuations(blocks).slice(0, limit);
 }
 
+function parseFacebookDate(value) {
+  const text = String(value || "").trim();
+  const now = new Date();
+  const monthDay = text.match(/(\d{1,2})월\s*(\d{1,2})일(?:\s*(오전|오후)\s*(\d{1,2}):(\d{2}))?/);
+
+  if (!monthDay) {
+    return now;
+  }
+
+  const [, month, day, period, hourText, minuteText] = monthDay;
+  let hour = Number(hourText || 0);
+
+  if (period === "오후" && hour < 12) {
+    hour += 12;
+  } else if (period === "오전" && hour === 12) {
+    hour = 0;
+  }
+
+  return new Date(now.getFullYear(), Number(month) - 1, Number(day), hour, Number(minuteText || 0), 0);
+}
+
+function cleanFacebookLines(lines) {
+  const stopPatterns = [
+    /^인사이트 및 광고 보기$/,
+    /^모든 공감:$/,
+    /^좋아요$/,
+    /^댓글 달기$/,
+    /^공유하기$/,
+    /^댓글을 입력하세요/,
+  ];
+  const bodyLines = [];
+
+  for (const line of lines) {
+    if (stopPatterns.some((pattern) => pattern.test(line))) {
+      break;
+    }
+
+    if (/^공유 대상:/.test(line)) {
+      continue;
+    }
+
+    if (line === "·" || line === "더 보기" || line === "적게 보기") {
+      continue;
+    }
+
+    bodyLines.push(line.replace(/\s*적게 보기$/, "").trim());
+  }
+
+  return bodyLines.filter(Boolean);
+}
+
+function extractFacebookArticles(articleTexts, limit) {
+  const posts = [];
+
+  for (const articleText of articleTexts) {
+    const lines = normalizeLines(articleText);
+    const authorIndex = lines.findIndex((line) => line === "미친바람");
+    const dateIndex = lines.findIndex((line) => /월\s*\d{1,2}일/.test(line));
+
+    if (authorIndex < 0 || dateIndex < 0 || dateIndex <= authorIndex) {
+      continue;
+    }
+
+    const body = cleanFacebookLines(lines.slice(dateIndex + 1)).join("\n").trim();
+
+    if (!body) {
+      continue;
+    }
+
+    const date = parseFacebookDate(lines[dateIndex]);
+
+    posts.push({
+      date: date.toISOString().slice(0, 10),
+      body,
+    });
+
+    if (posts.length >= limit) {
+      break;
+    }
+  }
+
+  return posts;
+}
+
 function mergeThreadsContinuations(blocks) {
   const merged = [];
 
@@ -337,12 +421,73 @@ function extractGenericBlocks(text, account, limit) {
     : [];
 }
 
-function extractPosts({ platform, text, account, limit }) {
+function extractPosts({ platform, text, articleTexts = [], account, limit }) {
+  if (platform === "facebook") {
+    return extractFacebookArticles(articleTexts, limit);
+  }
+
   if (platform === "threads") {
     return extractThreadsBlocks(text, account, limit);
   }
 
   return extractGenericBlocks(text, account, limit);
+}
+
+async function captureBrowserPage(client, sessionId, platform, limit) {
+  if (platform === "facebook") {
+    return evaluate(
+      client,
+      sessionId,
+      `new Promise((resolve) => {
+        function visibleArticles() {
+          return Array.from(document.querySelectorAll('[role="article"], article'))
+            .filter((node) => (node.innerText || '').includes('미친바람'));
+        }
+
+        function clickMore(articles) {
+          for (const article of articles) {
+            const controls = Array.from(article.querySelectorAll('[role="button"], span, div'));
+            const more = controls.find((node) => (node.innerText || node.textContent || '').trim() === '더 보기');
+
+            if (more && typeof more.click === 'function') {
+              more.click();
+            }
+          }
+        }
+
+        async function run() {
+          window.scrollTo(0, 0);
+          await new Promise((innerResolve) => setTimeout(innerResolve, 1200));
+          let articles = visibleArticles();
+          clickMore(articles);
+          await new Promise((innerResolve) => setTimeout(innerResolve, 900));
+
+          for (let attempt = 0; attempt < 4 && visibleArticles().length < ${Number(limit) + 1}; attempt += 1) {
+            window.scrollBy(0, 900);
+            await new Promise((innerResolve) => setTimeout(innerResolve, 1400));
+            articles = visibleArticles();
+            clickMore(articles);
+            await new Promise((innerResolve) => setTimeout(innerResolve, 700));
+          }
+
+          resolve({
+            text: document.body ? document.body.innerText : '',
+            articleTexts: visibleArticles().map((node) => node.innerText || '').filter(Boolean).slice(0, ${Number(limit) + 2}),
+          });
+        }
+
+        run();
+      })`,
+      true
+    );
+  }
+
+  const text = await evaluate(client, sessionId, "document.body ? document.body.innerText : ''");
+
+  return {
+    text,
+    articleTexts: [],
+  };
 }
 
 function formatDateParts(date) {
@@ -521,8 +666,14 @@ async function main() {
       true
     );
 
-    const text = await evaluate(client, page.sessionId, "document.body ? document.body.innerText : ''");
-    const extractedPosts = extractPosts({ platform, text, account, limit }).filter((post) => {
+    const capture = await captureBrowserPage(client, page.sessionId, platform, limit);
+    const extractedPosts = extractPosts({
+      platform,
+      text: capture.text,
+      articleTexts: capture.articleTexts,
+      account,
+      limit,
+    }).filter((post) => {
       if (!since) {
         return true;
       }
