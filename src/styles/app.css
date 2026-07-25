@@ -1376,8 +1376,7 @@ input[type="checkbox"] {
 }
 
 .mesh-edge.highlighted {
-  stroke: rgba(38, 184, 145, 0.72);
-  stroke-width: calc(1.4px + var(--edge-weight, 1) * 0.58px);
+  stroke: rgba(183, 121, 31, 0.82);
 }
 
 .dark .mesh-edge {
@@ -1389,7 +1388,7 @@ input[type="checkbox"] {
 }
 
 .dark .mesh-edge.highlighted {
-  stroke: rgba(142, 216, 200, 0.78);
+  stroke: rgba(242, 201, 76, 0.86);
 }
 
 .mesh-post-node circle {

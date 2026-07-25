@@ -2013,7 +2013,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                     <circle
                       cx={position.x}
                       cy={position.y}
-                      r={1 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 4.2}
+                      r={1.8 + Math.sqrt((mesh.postDegrees.get(post.id) ?? 0) / mesh.maxDegree) * 3.4}
                     />
                     <title>{(post.title || "Untitled Post") + "\n" + post.date + "\nConnections: " + (mesh.postDegrees.get(post.id) ?? 0)}</title>
                   </g>
