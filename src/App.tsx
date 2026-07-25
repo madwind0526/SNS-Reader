@@ -246,8 +246,6 @@ const emptyCardFilters: CardFilters = {
 };
 
 const genericMeshTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
-const commonConnectionTagMinCount = 40;
-const commonConnectionTagRatio = 0.01;
 const meshVisibleEdgeLimit = 360;
 const meshCanvasSize = 1000;
 const meshPanMargin = 180;
@@ -270,16 +268,6 @@ function getTagCounts(posts: ConvertedPost[]) {
   return tagCounts;
 }
 
-function getConnectionTagNames(posts: ConvertedPost[], tagCounts = getTagCounts(posts)) {
-  const commonLimit = Math.max(commonConnectionTagMinCount, Math.ceil(posts.length * commonConnectionTagRatio));
-
-  return new Set(
-    Array.from(tagCounts.entries())
-      .filter(([_tag, count]) => count < commonLimit)
-      .map(([tag]) => tag)
-  );
-}
-
 function hashToUnit(value: string, salt: number) {
   let hash = 2166136261 ^ salt;
 
@@ -298,17 +286,14 @@ function clampNumber(value: number, min: number, max: number) {
 function buildConnectionCounts(posts: ConvertedPost[]) {
   const connectedPostIds = new Map<string, Set<string>>();
   const postsByTag = new Map<string, string[]>();
-  const connectionTagNames = getConnectionTagNames(posts);
 
   posts.forEach((post) => {
     connectedPostIds.set(post.id, new Set());
 
-    getSemanticTags(post)
-      .filter((tag) => connectionTagNames.has(tag))
-      .forEach((tag) => {
-        const existingPosts = postsByTag.get(tag) ?? [];
-        postsByTag.set(tag, [...existingPosts, post.id]);
-      });
+    getSemanticTags(post).forEach((tag) => {
+      const existingPosts = postsByTag.get(tag) ?? [];
+      postsByTag.set(tag, [...existingPosts, post.id]);
+    });
   });
 
   postsByTag.forEach((postIds) => {
@@ -1754,6 +1739,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
     pointerX: number;
     pointerY: number;
   } | null>(null);
+  const [selectedMeshTag, setSelectedMeshTag] = useState<string | null>(null);
   const meshDataKey = useMemo(() => {
     const firstPostId = posts[0]?.id ?? "";
     const lastPostId = posts[posts.length - 1]?.id ?? "";
@@ -1763,7 +1749,6 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
   const mesh = useMemo(() => {
     const postTagMap = new Map<string, string[]>();
     const tagCounts = getTagCounts(posts);
-    const connectionTagNames = getConnectionTagNames(posts, tagCounts);
 
     posts.forEach((post) => {
       const normalizedTags = getSemanticTags(post);
@@ -1778,7 +1763,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
     const topTags = Array.from(tagCounts.entries())
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 18);
-    const tagNames = new Set(topTags.map(([tag]) => tag).filter((tag) => connectionTagNames.has(tag)));
+    const tagNames = new Set(topTags.map(([tag]) => tag));
     const graphPosts = posts;
     const postPositions = new Map<string, { x: number; y: number }>();
     const edges: Array<{ from: string; to: string; sharedTags: string[]; weight: number }> = [];
@@ -1819,9 +1804,15 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
 
     edges.push(...edgeWeights.values());
 
-    const visibleEdges = edges
-      .sort((left, right) => right.weight - left.weight || (postDegrees.get(right.from) ?? 0) - (postDegrees.get(left.from) ?? 0))
-      .slice(0, meshVisibleEdgeLimit);
+    const sortedEdges = edges.sort(
+      (left, right) => right.weight - left.weight || (postDegrees.get(right.from) ?? 0) - (postDegrees.get(left.from) ?? 0)
+    );
+    const visibleEdges = sortedEdges.slice(0, meshVisibleEdgeLimit);
+    const highlightedEdges = selectedMeshTag
+      ? sortedEdges.filter((edge) => edge.sharedTags.includes(selectedMeshTag)).slice(0, meshVisibleEdgeLimit)
+      : [];
+    const highlightedEdgeKeys = new Set(highlightedEdges.map((edge) => `${edge.from}---${edge.to}`));
+    const backgroundEdges = visibleEdges.filter((edge) => !highlightedEdgeKeys.has(`${edge.from}---${edge.to}`));
     const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
 
     const layoutPosts = [...graphPosts].sort((left, right) => {
@@ -1847,8 +1838,8 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       });
     });
 
-    return { graphPosts, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
-  }, [posts]);
+    return { backgroundEdges, graphPosts, highlightedEdges, maxDegree, postDegrees, postPositions, topTags, visibleEdges };
+  }, [posts, selectedMeshTag]);
   const meshViewSize = meshCanvasSize / meshViewport.zoom;
   const meshViewBoxX = clampNumber(
     meshViewport.centerX - meshViewSize / 2,
@@ -1876,6 +1867,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
   useEffect(() => {
     setMeshViewport({ centerX: 500, centerY: 500, zoom: 1 });
     setMeshDragStart(null);
+    setSelectedMeshTag(null);
   }, [meshDataKey]);
 
   return (
@@ -1885,7 +1877,10 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
           <p className="eyebrow">{"TAG \uC5F0\uACB0\uB9DD"}</p>
           <h1>Mesh View</h1>
         </div>
-        <span className="mesh-summary">{mesh.graphPosts.length}{"\uAC1C \uAE00 / "}{mesh.visibleEdges.length}{"\uAC1C \uC5F0\uACB0"}</span>
+        <span className="mesh-summary">
+          {mesh.graphPosts.length}{"\uAC1C \uAE00 / "}{mesh.visibleEdges.length}{"\uAC1C \uC5F0\uACB0"}
+          {selectedMeshTag ? ` / ${selectedMeshTag} ${mesh.highlightedEdges.length}\uAC1C highlight` : ""}
+        </span>
       </div>
 
       <div className="mesh-layout">
@@ -1962,7 +1957,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
                 });
               }}
             >
-              {mesh.visibleEdges.map((edge) => {
+              {mesh.backgroundEdges.map((edge) => {
                 const from = mesh.postPositions.get(edge.from);
                 const to = mesh.postPositions.get(edge.to);
 
@@ -1972,8 +1967,30 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
 
                 return (
                   <line
-                    className="mesh-edge"
+                    className={selectedMeshTag ? "mesh-edge muted" : "mesh-edge"}
                     key={edge.from + "-" + edge.to}
+                    style={{ "--edge-weight": Math.min(4, edge.weight) } as CSSProperties}
+                    x1={from.x}
+                    x2={to.x}
+                    y1={from.y}
+                    y2={to.y}
+                  >
+                    <title>{edge.sharedTags.join(", ")}</title>
+                  </line>
+                );
+              })}
+              {mesh.highlightedEdges.map((edge) => {
+                const from = mesh.postPositions.get(edge.from);
+                const to = mesh.postPositions.get(edge.to);
+
+                if (!from || !to) {
+                  return null;
+                }
+
+                return (
+                  <line
+                    className="mesh-edge highlighted"
+                    key={`highlight-${edge.from}-${edge.to}`}
                     style={{ "--edge-weight": Math.min(4, edge.weight) } as CSSProperties}
                     x1={from.x}
                     x2={to.x}
@@ -2010,10 +2027,16 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
           <h2>Top TAG</h2>
           <div className="mesh-tag-list">
             {mesh.topTags.map(([tag, count]) => (
-              <div className="mesh-tag-item" key={tag}>
+              <button
+                className={selectedMeshTag === tag ? "mesh-tag-item active" : "mesh-tag-item"}
+                key={tag}
+                onClick={() => setSelectedMeshTag((current) => (current === tag ? null : tag))}
+                type="button"
+                title={`${tag} TAG \uC5F0\uACB0\uC120\uB9CC \uBCF4\uAE30`}
+              >
                 <span>{tag}</span>
                 <strong>{count}</strong>
-              </div>
+              </button>
             ))}
           </div>
         </aside>

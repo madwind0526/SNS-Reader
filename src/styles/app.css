@@ -1371,8 +1371,25 @@ input[type="checkbox"] {
   stroke-width: calc(0.8px + var(--edge-weight, 1) * 0.45px);
 }
 
+.mesh-edge.muted {
+  stroke: rgba(31, 111, 104, 0.1);
+}
+
+.mesh-edge.highlighted {
+  stroke: rgba(38, 184, 145, 0.72);
+  stroke-width: calc(1.4px + var(--edge-weight, 1) * 0.58px);
+}
+
 .dark .mesh-edge {
   stroke: rgba(142, 216, 200, 0.25);
+}
+
+.dark .mesh-edge.muted {
+  stroke: rgba(142, 216, 200, 0.1);
+}
+
+.dark .mesh-edge.highlighted {
+  stroke: rgba(142, 216, 200, 0.78);
 }
 
 .mesh-post-node circle {
@@ -1439,12 +1456,29 @@ input[type="checkbox"] {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
+  width: 100%;
+  border: 0;
   border-bottom: 1px solid rgba(32, 33, 36, 0.08);
-  padding: 7px 0;
+  background: transparent;
+  color: inherit;
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mesh-tag-item:hover,
+.mesh-tag-item.active {
+  background: rgba(31, 111, 104, 0.08);
+  border-radius: 6px;
 }
 
 .dark .mesh-tag-item {
   border-color: rgba(243, 241, 234, 0.1);
+}
+
+.dark .mesh-tag-item:hover,
+.dark .mesh-tag-item.active {
+  background: rgba(142, 216, 200, 0.1);
 }
 
 .mesh-tag-item span {
