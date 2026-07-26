@@ -12,7 +12,6 @@ import {
   ListFilter,
   Maximize2,
   Minimize2,
-  Moon,
   Pencil,
   Plus,
   Power,
@@ -23,7 +22,6 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
-  Sun,
   Tags,
   Trash2,
   Twitter,
@@ -117,6 +115,30 @@ const emptyAccount: Omit<SnsAccountConfig, "id"> = {
   username: "",
   credentialKey: ""
 };
+
+function validatePdfYearRangeList(value: string) {
+  const entries = String(value || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    const match = entry.match(/^(\d{4})(?:\s*-\s*(\d{4}))?$/);
+
+    if (!match) {
+      return `년도 형식이 올바르지 않습니다: ${entry}`;
+    }
+
+    const startYear = Number(match[1]);
+    const endYear = Number(match[2] || match[1]);
+
+    if (startYear > endYear) {
+      return `년도 범위는 앞의 연도가 뒤의 연도보다 클 수 없습니다: ${entry}`;
+    }
+  }
+
+  return "";
+}
 
 const BUILD_VERSION = "Build v0.1.0";
 
@@ -250,10 +272,70 @@ const meshVisibleEdgeLimit = 360;
 const meshCanvasSize = 1000;
 const meshPanMargin = 180;
 
+type MeshEdge = {
+  from: string;
+  to: string;
+  sharedTags: string[];
+  weight: number;
+};
+
 function getSemanticTags(post: ConvertedPost) {
-  return Array.from(new Set(post.tags
-    .map((tag) => tag.replace(/^#/, "").trim())
+  const sourceTags = Array.isArray(post.tags) ? post.tags : [];
+
+  return Array.from(new Set(sourceTags
+    .map((tag) => String(tag).replace(/^#/, "").trim())
     .filter((tag) => tag && !genericMeshTags.has(tag.toLowerCase()))));
+}
+
+function getPostKey(post: ConvertedPost, fallback = "") {
+  return String(post.id || post.filePath || post.title || fallback);
+}
+
+function getEdgeKey(from: string, to: string) {
+  return from < to ? `${from}---${to}` : `${to}---${from}`;
+}
+
+function selectBalancedMeshEdges(edges: MeshEdge[], limit: number, focusTag?: string | null) {
+  const selected: MeshEdge[] = [];
+  const selectedKeys = new Set<string>();
+  const nodeVisualCounts = new Map<string, number>();
+  const tagVisualCounts = new Map<string, number>();
+  const tagLimit = focusTag ? limit : Math.max(18, Math.ceil(limit / 10));
+  const nodeCaps = [2, 4, 7, Number.POSITIVE_INFINITY];
+
+  for (const nodeCap of nodeCaps) {
+    for (const edge of edges) {
+      if (selected.length >= limit) {
+        return selected;
+      }
+
+      if (focusTag && !edge.sharedTags.includes(focusTag)) {
+        continue;
+      }
+
+      const key = getEdgeKey(edge.from, edge.to);
+      if (selectedKeys.has(key)) {
+        continue;
+      }
+
+      const primaryTag = focusTag ?? edge.sharedTags[0] ?? "";
+      const fromCount = nodeVisualCounts.get(edge.from) ?? 0;
+      const toCount = nodeVisualCounts.get(edge.to) ?? 0;
+      const currentTagCount = tagVisualCounts.get(primaryTag) ?? 0;
+
+      if (fromCount >= nodeCap || toCount >= nodeCap || (!focusTag && currentTagCount >= tagLimit)) {
+        continue;
+      }
+
+      selected.push(edge);
+      selectedKeys.add(key);
+      nodeVisualCounts.set(edge.from, fromCount + 1);
+      nodeVisualCounts.set(edge.to, toCount + 1);
+      tagVisualCounts.set(primaryTag, currentTagCount + 1);
+    }
+  }
+
+  return selected;
 }
 
 function getTagCounts(posts: ConvertedPost[]) {
@@ -287,12 +369,15 @@ function buildConnectionCounts(posts: ConvertedPost[]) {
   const connectedPostIds = new Map<string, Set<string>>();
   const postsByTag = new Map<string, string[]>();
 
-  posts.forEach((post) => {
-    connectedPostIds.set(post.id, new Set());
+  posts.forEach((post, index) => {
+    const postId = getPostKey(post, String(index));
+
+    connectedPostIds.set(postId, new Set());
 
     getSemanticTags(post).forEach((tag) => {
       const existingPosts = postsByTag.get(tag) ?? [];
-      postsByTag.set(tag, [...existingPosts, post.id]);
+      existingPosts.push(postId);
+      postsByTag.set(tag, existingPosts);
     });
   });
 
@@ -514,6 +599,7 @@ export function App() {
   const [selectedPost, setSelectedPost] = useState<ConvertedPost | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<ConvertedPost | null>(null);
+  const [deletePdfCandidate, setDeletePdfCandidate] = useState<PdfBook | null>(null);
   const [isSnsReading, setIsSnsReading] = useState(false);
   const [isImportingArchive, setIsImportingArchive] = useState(false);
   const [isEnrichingMarkdown, setIsEnrichingMarkdown] = useState(false);
@@ -733,7 +819,7 @@ export function App() {
     return querySourcePosts.filter((post) => {
       const commentAuthorTerms = splitCommaTerms(cardFilters.commentAuthor);
       const tagTerms = splitCommaTerms(cardFilters.tagText);
-      const connectionCount = connectionCounts.get(post.id) ?? 0;
+      const connectionCount = connectionCounts.get(getPostKey(post)) ?? 0;
       const connectionMax = cardFilters.connectionMax > 0 ? cardFilters.connectionMax : Number.POSITIVE_INFINITY;
       const filterMatches =
         (!cardFilters.imagesOnly || post.imageCount > 0) &&
@@ -1001,6 +1087,15 @@ export function App() {
       return;
     }
 
+    if (settings.pdfSplitMode === "year") {
+      const yearError = validatePdfYearRangeList(settings.pdfYear);
+
+      if (yearError) {
+        setSystemMessage(yearError);
+        return;
+      }
+    }
+
     setIsCreatingPdf(true);
     setSystemMessage("PDF 생성 중입니다. Markdown, 이미지, 요약 정보를 책 형식으로 배치하고 있습니다...");
 
@@ -1192,17 +1287,39 @@ export function App() {
     }
   };
 
+  const deletePdf = async () => {
+    if (!deletePdfCandidate) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/pdf-file?path=${encodeURIComponent(deletePdfCandidate.filePath)}`, {
+        method: "DELETE"
+      });
+
+      if (!response.ok) {
+        throw new Error(`PDF delete failed with ${response.status}`);
+      }
+
+      setPdfBooks((current) => current.filter((pdf) => pdf.id !== deletePdfCandidate.id));
+      setSelectedPdf((current) => (current?.id === deletePdfCandidate.id ? null : current));
+      setSystemMessage(`${deletePdfCandidate.title || "PDF"} 파일을 삭제했습니다.`);
+      setDeletePdfCandidate(null);
+      void refreshPdfBooks({ silent: true });
+    } catch (error) {
+      setSystemMessage(error instanceof Error ? error.message : "PDF delete failed.");
+    }
+  };
+
   return (
     <main className={`app-shell ${settings.theme}`}>
       <TopToolbar
         query={query}
-        settings={settings}
         view={view}
         onQueryChange={setQuery}
         onLoginBrowser={openLoginBrowser}
         onRestartServer={restartServer}
         onSnsRead={runSnsRead}
-        onThemeToggle={() => updateSettings("theme", settings.theme === "light" ? "dark" : "light")}
         onViewChange={openView}
         snsReadBusy={isSnsReading}
       />
@@ -1257,6 +1374,7 @@ export function App() {
               setSelectedPdf(null);
               setSystemMessage("PDF 생성 설정을 열었습니다.");
             }}
+            onDeletePdf={setDeletePdfCandidate}
             onOpenPdf={(pdf) => {
               setSelectedPdf(pdf);
               setPdfModalMode("viewer");
@@ -1321,6 +1439,7 @@ export function App() {
           updatePdfStyle={updatePdfStyle}
           updateSettings={updateSettings}
           onCreate={createPdfBook}
+          onSave={handleSave}
           onClose={() => setPdfModalMode(null)}
         />
       )}
@@ -1432,6 +1551,14 @@ export function App() {
           post={deleteCandidate}
           onCancel={() => setDeleteCandidate(null)}
           onConfirm={deletePost}
+        />
+      )}
+
+      {deletePdfCandidate && (
+        <ConfirmDeletePdfModal
+          pdf={deletePdfCandidate}
+          onCancel={() => setDeletePdfCandidate(null)}
+          onConfirm={deletePdf}
         />
       )}
 
@@ -1561,24 +1688,20 @@ function PlatformSidebar({
 
 function TopToolbar({
   query,
-  settings,
   view,
   onLoginBrowser,
   onQueryChange,
   onRestartServer,
   onSnsRead,
-  onThemeToggle,
   onViewChange,
   snsReadBusy
 }: {
   query: string;
-  settings: AppSettings;
   view: ViewMode;
   onLoginBrowser: () => void;
   onQueryChange: (query: string) => void;
   onRestartServer: () => void;
   onSnsRead: () => void;
-  onThemeToggle: () => void;
   onViewChange: (view: ViewMode, message: string) => void;
   snsReadBusy: boolean;
 }) {
@@ -1600,29 +1723,37 @@ function TopToolbar({
 
       <nav className="toolbar-actions" aria-label="Main actions">
         <button
-          className={view === "sns-read" ? "icon-button active" : "icon-button"}
-          disabled={snsReadBusy}
-          onClick={onSnsRead}
-          title={snsReadBusy ? "SNS Read running" : "SNS Read"}
-          type="button"
-        >
-          <Database size={20} />
-        </button>
-        <button
           className={view === "mesh-view" ? "icon-button active" : "icon-button"}
           onClick={() => onViewChange("mesh-view", "Mesh view opened.")}
-          title="Mesh View"
+          title="Mesh"
           type="button"
         >
           <GitBranch size={20} />
         </button>
         <button
+          className={view === "sns-read" ? "icon-button active" : "icon-button"}
+          disabled={snsReadBusy}
+          onClick={onSnsRead}
+          title={snsReadBusy ? "SNS running" : "SNS"}
+          type="button"
+        >
+          <Database size={20} />
+        </button>
+        <button
           className={view === "pdf-write" ? "icon-button active" : "icon-button"}
           onClick={() => onViewChange("pdf-write", "PDF writer view opened.")}
-          title="PDF Write"
+          title="PDF"
           type="button"
         >
           <FileText size={20} />
+        </button>
+        <button
+          className="icon-button"
+          onClick={onLoginBrowser}
+          title="로그인"
+          type="button"
+        >
+          <KeyRound size={20} />
         </button>
         <button
           className={view === "settings" ? "icon-button active" : "icon-button"}
@@ -1631,22 +1762,6 @@ function TopToolbar({
           type="button"
         >
           <Settings size={20} />
-        </button>
-        <button
-          className="icon-button"
-          onClick={onLoginBrowser}
-          title={"\uB85C\uADF8\uC778 \uBE0C\uB77C\uC6B0\uC800"}
-          type="button"
-        >
-          <KeyRound size={20} />
-        </button>
-        <button
-          className="icon-button"
-          onClick={onThemeToggle}
-          title={settings.theme === "light" ? "Dark mode" : "Light mode"}
-          type="button"
-        >
-          {settings.theme === "light" ? <Moon size={20} /> : <Sun size={20} />}
         </button>
         <button
           className="icon-button restart-button"
@@ -1741,16 +1856,20 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
   } | null>(null);
   const [selectedMeshTag, setSelectedMeshTag] = useState<string | null>(null);
   const meshDataKey = useMemo(() => {
-    const firstPostId = posts[0]?.id ?? "";
-    const lastPostId = posts[posts.length - 1]?.id ?? "";
+    const firstPostId = posts[0] ? getPostKey(posts[0]) : "";
+    const lastPostId = posts[posts.length - 1] ? getPostKey(posts[posts.length - 1]) : "";
 
     return `${posts.length}:${firstPostId}:${lastPostId}`;
   }, [posts]);
   const mesh = useMemo(() => {
     const postTagMap = new Map<string, string[]>();
-    const tagCounts = getTagCounts(posts);
+    const graphPosts = posts.map((post, index) => ({
+      ...post,
+      id: getPostKey(post, String(index))
+    }));
+    const tagCounts = getTagCounts(graphPosts);
 
-    posts.forEach((post) => {
+    graphPosts.forEach((post) => {
       const normalizedTags = getSemanticTags(post);
 
       if (normalizedTags.length === 0) {
@@ -1764,11 +1883,9 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 18);
     const tagNames = new Set(topTags.map(([tag]) => tag));
-    const graphPosts = posts;
     const postPositions = new Map<string, { x: number; y: number }>();
-    const edges: Array<{ from: string; to: string; sharedTags: string[]; weight: number }> = [];
     const postDegrees = new Map<string, number>();
-    const edgeWeights = new Map<string, { from: string; to: string; sharedTags: string[]; weight: number }>();
+    const edgeWeights = new Map<string, MeshEdge>();
     const postsByVisibleTag = new Map<string, string[]>();
     const centerX = 500;
     const centerY = 500;
@@ -1786,7 +1903,7 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
         for (let rightIndex = leftIndex + 1; rightIndex < postIds.length; rightIndex += 1) {
           const from = postIds[leftIndex];
           const to = postIds[rightIndex];
-          const key = from < to ? `${from}---${to}` : `${to}---${from}`;
+          const key = getEdgeKey(from, to);
           const existingEdge = edgeWeights.get(key);
 
           if (existingEdge) {
@@ -1802,23 +1919,21 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       }
     });
 
-    edges.push(...edgeWeights.values());
-
-    const sortedEdges = edges.sort(
+    const sortedEdges = Array.from(edgeWeights.values()).sort(
       (left, right) => right.weight - left.weight || (postDegrees.get(right.from) ?? 0) - (postDegrees.get(left.from) ?? 0)
     );
-    const visibleEdges = sortedEdges.slice(0, meshVisibleEdgeLimit);
+    const visibleEdges = selectBalancedMeshEdges(sortedEdges, meshVisibleEdgeLimit);
     const highlightedEdges = selectedMeshTag
-      ? sortedEdges.filter((edge) => edge.sharedTags.includes(selectedMeshTag)).slice(0, meshVisibleEdgeLimit)
+      ? selectBalancedMeshEdges(sortedEdges, meshVisibleEdgeLimit, selectedMeshTag)
       : [];
-    const highlightedEdgeKeys = new Set(highlightedEdges.map((edge) => `${edge.from}---${edge.to}`));
-    const backgroundEdges = visibleEdges.filter((edge) => !highlightedEdgeKeys.has(`${edge.from}---${edge.to}`));
+    const highlightedEdgeKeys = new Set(highlightedEdges.map((edge) => getEdgeKey(edge.from, edge.to)));
+    const backgroundEdges = visibleEdges.filter((edge) => !highlightedEdgeKeys.has(getEdgeKey(edge.from, edge.to)));
     const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
 
     const layoutPosts = [...graphPosts].sort((left, right) => {
       const degreeDelta = (postDegrees.get(right.id) ?? 0) - (postDegrees.get(left.id) ?? 0);
 
-      return degreeDelta || left.dateIso.localeCompare(right.dateIso) || left.id.localeCompare(right.id);
+      return degreeDelta || String(left.dateIso || left.date).localeCompare(String(right.dateIso || right.date)) || left.id.localeCompare(right.id);
     });
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
@@ -1826,11 +1941,11 @@ function MeshView({ posts }: { posts: ConvertedPost[] }) {
       const degree = postDegrees.get(post.id) ?? 0;
       const degreeRatio = Math.sqrt(degree / maxDegree);
       const baseRadius = Math.sqrt((index + 0.5) / Math.max(1, layoutPosts.length));
-      const radialJitter = (hashToUnit(post.filePath || post.id, 31) - 0.5) * 0.08;
+      const radialJitter = (hashToUnit(String(post.filePath || post.id), 31) - 0.5) * 0.08;
       const radial = clampNumber(baseRadius * (1 - degreeRatio * 0.22) + radialJitter, 0.06, 0.98);
-      const angle = index * goldenAngle + hashToUnit(post.id + post.dateIso, 17) * 0.42;
-      const jitterX = (hashToUnit(post.title + post.id, 47) - 0.5) * 18;
-      const jitterY = (hashToUnit(post.id + post.platform, 59) - 0.5) * 18;
+      const angle = index * goldenAngle + hashToUnit(post.id + String(post.dateIso || post.date), 17) * 0.42;
+      const jitterX = (hashToUnit(String(post.title || "") + post.id, 47) - 0.5) * 18;
+      const jitterY = (hashToUnit(post.id + String(post.platform || ""), 59) - 0.5) * 18;
 
       postPositions.set(post.id, {
         x: clampNumber(centerX + Math.cos(angle) * 438 * radial + jitterX, 48, 952),
@@ -2356,13 +2471,59 @@ function ConfirmDeletePostModal({
   );
 }
 
+function ConfirmDeletePdfModal({
+  pdf,
+  onCancel,
+  onConfirm
+}: {
+  pdf: PdfBook;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={onCancel} role="presentation">
+      <section
+        className="modal-shell confirm-shell"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirm delete PDF"
+      >
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">Delete</p>
+            <h2>PDF를 삭제할까요?</h2>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="Close" type="button">
+            <X size={20} />
+          </button>
+        </header>
+        <div className="modal-body">
+          <p className="confirm-copy">{pdf.title || "PDF"} 파일을 삭제합니다.</p>
+          <small>{pdf.filePath}</small>
+        </div>
+        <footer className="modal-footer">
+          <button className="ghost-action compact" onClick={onCancel} type="button">
+            Cancel
+          </button>
+          <button className="danger-action compact" onClick={onConfirm} type="button">
+            Delete
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 function PdfWriteView({
   pdfBooks,
   onCreate,
+  onDeletePdf,
   onOpenPdf
 }: {
   pdfBooks: PdfBook[];
   onCreate: () => void;
+  onDeletePdf: (pdf: PdfBook) => void;
   onOpenPdf: (pdf: PdfBook) => void;
 }) {
   return (
@@ -2387,7 +2548,19 @@ function PdfWriteView({
           </div>
         )}
         {pdfBooks.map((pdf) => (
-          <button className="pdf-card" key={pdf.id} onClick={() => onOpenPdf(pdf)} type="button">
+          <article className="pdf-card" key={pdf.id}>
+            <button className="pdf-card-hit-area" onClick={() => onOpenPdf(pdf)} title={`${pdf.title} 미리보기`} type="button" />
+            <button
+              className="pdf-card-delete"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDeletePdf(pdf);
+              }}
+              title="PDF 삭제"
+              type="button"
+            >
+              <Trash2 size={16} />
+            </button>
             <div className="pdf-card-cover">
               {pdf.coverUrl ? (
                 <img alt={`${pdf.title} 표지`} loading="lazy" src={pdf.coverUrl} />
@@ -2408,7 +2581,7 @@ function PdfWriteView({
                 미리보기
               </div>
             </div>
-          </button>
+          </article>
         ))}
       </div>
     </section>
@@ -2470,6 +2643,16 @@ function SettingsView({
       </div>
 
       <Panel title="General Setting" icon={<FolderOpen size={18} />}>
+        <label>
+          Theme
+          <select
+            onChange={(event) => updateSettings("theme", event.target.value as AppSettings["theme"])}
+            value={settings.theme}
+          >
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
         <label>
           DB Folder
           <input
@@ -2912,6 +3095,7 @@ function PdfCreatorModal({
   updatePdfStyle,
   updateSettings,
   onCreate,
+  onSave,
   onClose
 }: {
   creating: boolean;
@@ -2920,11 +3104,26 @@ function PdfCreatorModal({
   updatePdfStyle: <Key extends keyof PdfTextStyle>(target: PdfStyleTarget, key: Key, value: PdfTextStyle[Key]) => void;
   updateSettings: <Key extends keyof AppSettings>(key: Key, value: AppSettings[Key]) => void;
   onCreate: () => void;
+  onSave: () => void;
   onClose: () => void;
 }) {
   const [styleTarget, setStyleTarget] = useState<PdfStyleTarget>("body");
   const [stylePreviewText, setStylePreviewText] = useState("가나다라마바사아자차카타파하\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz");
+  const fontOptions = settings.pdfFonts.length ? settings.pdfFonts : defaultSettings.pdfFonts;
   const activeStyle = settings.pdfStyles[styleTarget];
+  const selectedFontKnown = fontOptions.some((font) => font.fontFamily === activeStyle.fontFamily);
+  const visibleFontOptions = selectedFontKnown
+    ? fontOptions
+    : [
+        ...fontOptions,
+        {
+          id: `current-${activeStyle.fontFamily}`,
+          label: activeStyle.fontFamily,
+          fontFamily: activeStyle.fontFamily,
+          regularPath: "",
+          boldPath: ""
+        }
+      ];
   const stylePreview: CSSProperties = {
     color: getReadablePreviewColor(activeStyle.color, settings.theme),
     fontFamily: `"${activeStyle.fontFamily}", "Malgun Gothic", sans-serif`,
@@ -3042,12 +3241,30 @@ function PdfCreatorModal({
             {settings.pdfPageOrientation === "landscape" && (
               <p className="hint">가로 페이지에서는 본문 2개 또는 3개를 사용할 수 있습니다.</p>
             )}
+            <div className="pdf-style-grid pdf-cover-image-grid">
+              <label>
+                세로 표지 그림
+                <input
+                  onChange={(event) => updateSettings("pdfPortraitCoverImagePath", event.target.value)}
+                  placeholder="assets\\Cover-Long3.jpeg"
+                  value={settings.pdfPortraitCoverImagePath}
+                />
+              </label>
+              <label>
+                가로 표지 그림
+                <input
+                  onChange={(event) => updateSettings("pdfLandscapeCoverImagePath", event.target.value)}
+                  placeholder="assets\\Cover-Wide2.png"
+                  value={settings.pdfLandscapeCoverImagePath}
+                />
+              </label>
+            </div>
             <label>
-              Cover image
+              Corner pattern
               <input
-                onChange={(event) => updateSettings("pdfCoverImagePath", event.target.value)}
-                placeholder="assets\\heart-food-journal-cover.jpeg"
-                value={settings.pdfCoverImagePath}
+                onChange={(event) => updateSettings("pdfCornerPatternPath", event.target.value)}
+                placeholder="assets\\korean-corner-pattern-1.jpeg"
+                value={settings.pdfCornerPatternPath}
               />
             </label>
             <label>
@@ -3064,10 +3281,11 @@ function PdfCreatorModal({
               <label>
                 Font
                 <select onChange={(event) => updatePdfStyle(styleTarget, "fontFamily", event.target.value)} value={activeStyle.fontFamily}>
-                  <option value="Malgun Gothic">Malgun Gothic</option>
-                  <option value="Pretendard">Pretendard</option>
-                  <option value="Noto Sans KR">Noto Sans KR</option>
-                  <option value="Nanum Gothic">Nanum Gothic</option>
+                  {visibleFontOptions.map((font) => (
+                    <option key={font.id} value={font.fontFamily}>
+                      {font.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -3116,9 +3334,14 @@ function PdfCreatorModal({
           <button className="ghost-action compact" disabled={creating} onClick={onClose} type="button">
             취소
           </button>
-          <button className="primary-action compact" disabled={creating} onClick={onCreate} type="button">
-            {creating ? "생성 중..." : "생성"}
-          </button>
+          <div className="modal-footer-actions pdf-creator-actions">
+            <button className="ghost-action compact pdf-save-action" disabled={creating} onClick={onSave} type="button">
+              저장
+            </button>
+            <button className="primary-action compact" disabled={creating} onClick={onCreate} type="button">
+              {creating ? "생성 중..." : "생성"}
+            </button>
+          </div>
         </footer>
       </section>
     </div>
@@ -3415,7 +3638,7 @@ function FilterPanelModal({
                   onChange={(event) => updateDraft("imagesOnly", event.target.checked)}
                   type="checkbox"
                 />
-                With Images
+                Images
               </label>
               <label className="check-tile">
                 <input
@@ -3423,7 +3646,7 @@ function FilterPanelModal({
                   onChange={(event) => updateDraft("tagsOnly", event.target.checked)}
                   type="checkbox"
                 />
-                With Tags
+                Tags
               </label>
               <label className="check-tile">
                 <input
@@ -3431,7 +3654,7 @@ function FilterPanelModal({
                   onChange={(event) => updateDraft("commentsOnly", event.target.checked)}
                   type="checkbox"
                 />
-                With Comments
+                Comments
               </label>
             </div>
           </div>
@@ -3963,7 +4186,7 @@ function LlmProviderConfigModal({
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="LLM ?ㅼ젙"
+        aria-label="LLM 설정"
       >
         <header className="modal-header">
           <div>

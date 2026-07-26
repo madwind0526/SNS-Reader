@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -575,6 +575,47 @@ function sanitizeFileSegment(value: string) {
     .slice(0, 120);
 }
 
+function monthRangeSegment(range: PdfBookRange) {
+  const fromMatch = String(range.from || "").match(/^(\d{4})-(\d{2})/);
+  const toMatch = String(range.to || "").match(/^(\d{4})-(\d{2})/);
+  const from = fromMatch ? `${fromMatch[1]}.${fromMatch[2]}` : "start";
+  const to = toMatch ? `${toMatch[1]}.${toMatch[2]}` : "end";
+
+  return `${from}-${to}`;
+}
+
+function pdfOutputFileName(range: PdfBookRange) {
+  return `SNS ${monthRangeSegment(range)}`.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 140) + ".pdf";
+}
+
+function dateRangeSegment(range: PdfBookRange) {
+  const from = String(range.from || "start").replaceAll("-", ".");
+  const to = String(range.to || "end").replaceAll("-", ".");
+
+  return `${from}-${to}`;
+}
+
+function pdfOutputFileNameForRange(range: PdfBookRange, existingNames: Set<string>) {
+  const monthName = pdfOutputFileName(range);
+
+  if (!existingNames.has(monthName.toLowerCase())) {
+    existingNames.add(monthName.toLowerCase());
+    return monthName;
+  }
+
+  const dateName = `SNS ${dateRangeSegment(range)}`.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 150) + ".pdf";
+
+  existingNames.add(dateName.toLowerCase());
+  return dateName;
+}
+
+function pdfMetadataPath(pdfPath: string) {
+  const metadataRoot = path.join(process.cwd(), "data", "runtime", "pdf-metadata");
+  const hash = createHash("sha1").update(path.resolve(pdfPath).toLowerCase()).digest("hex");
+
+  return path.join(metadataRoot, `${hash}.json`);
+}
+
 function parseDateOnly(value: string) {
   const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
 
@@ -594,6 +635,84 @@ function formatKoreanDate(date: Date | null) {
   }
 
   return date.toISOString().slice(0, 10);
+}
+
+const genericMeshTags = new Set(["sns", "facebook", "instagram", "threads", "youtube", "x", "naverblog", "naver-blog"]);
+const pdfMeshVisibleEdgeLimit = 360;
+
+type PdfMeshEdge = {
+  from: string;
+  to: string;
+  sharedTags: string[];
+  weight: number;
+};
+
+function pdfEdgeKey(from: string, to: string) {
+  return from < to ? `${from}---${to}` : `${to}---${from}`;
+}
+
+function selectBalancedPdfMeshEdges(edges: PdfMeshEdge[], limit: number) {
+  const selected: PdfMeshEdge[] = [];
+  const selectedKeys = new Set<string>();
+  const nodeVisualCounts = new Map<string, number>();
+  const tagVisualCounts = new Map<string, number>();
+  const tagLimit = Math.max(18, Math.ceil(limit / 10));
+  const nodeCaps = [2, 4, 7, Number.POSITIVE_INFINITY];
+
+  for (const nodeCap of nodeCaps) {
+    for (const edge of edges) {
+      if (selected.length >= limit) {
+        return selected;
+      }
+
+      const key = pdfEdgeKey(edge.from, edge.to);
+      if (selectedKeys.has(key)) {
+        continue;
+      }
+
+      const primaryTag = edge.sharedTags[0] ?? "";
+      const fromCount = nodeVisualCounts.get(edge.from) ?? 0;
+      const toCount = nodeVisualCounts.get(edge.to) ?? 0;
+      const currentTagCount = tagVisualCounts.get(primaryTag) ?? 0;
+
+      if (fromCount >= nodeCap || toCount >= nodeCap || currentTagCount >= tagLimit) {
+        continue;
+      }
+
+      selected.push(edge);
+      selectedKeys.add(key);
+      nodeVisualCounts.set(edge.from, fromCount + 1);
+      nodeVisualCounts.set(edge.to, toCount + 1);
+      tagVisualCounts.set(primaryTag, currentTagCount + 1);
+    }
+  }
+
+  return selected;
+}
+
+function hashToUnit(value: string, salt: number) {
+  let hash = 2166136261 ^ salt;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0) / 4294967295;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function semanticTagsFromPost(post: Record<string, any>) {
+  return Array.from(
+    new Set(
+      (Array.isArray(post.tags) ? post.tags : [])
+        .map((tag: string) => String(tag).replace(/^#/, "").trim())
+        .filter((tag: string) => tag && !genericMeshTags.has(tag.toLowerCase()))
+    )
+  );
 }
 
 const englishMonthNames = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
@@ -651,6 +770,19 @@ function filterCardsByRange(cards: Array<Record<string, any>>, range: PdfBookRan
     .sort((left, right) => String(left.dateIso).localeCompare(String(right.dateIso)));
 }
 
+function pdfRangeFromPosts(posts: Array<Record<string, any>>) {
+  const dates = posts.map((post) => String(post.dateIso || "")).filter(Boolean).sort();
+  const from = dates[0] || "";
+  const to = dates.at(-1) || from;
+
+  return {
+    title: `SNS Archive ${from || "all"}_${to || "all"}`,
+    label: `${from || "first"} - ${to || "latest"}`,
+    from,
+    to,
+  };
+}
+
 function filterPdfPosts(cards: Array<Record<string, any>>, settings: Record<string, any>) {
   return filterCardsByRange(cards, getPdfRange(settings, cards));
 }
@@ -674,8 +806,12 @@ function parsePdfYearRanges(value: string): PdfBookRange[] {
 
     const startYear = Number(match[1]);
     const endYear = Number(match[2] || match[1]);
-    const fromYear = Math.min(startYear, endYear);
-    const toYear = Math.max(startYear, endYear);
+    if (startYear > endYear) {
+      throw new Error(`년도 범위는 앞의 연도가 뒤의 연도보다 클 수 없습니다: ${entry}`);
+    }
+
+    const fromYear = startYear;
+    const toYear = endYear;
     const label = fromYear === toYear ? `${fromYear}.01.01 - ${fromYear}.12.31` : `${fromYear}.01.01 - ${toYear}.12.31`;
     const title = fromYear === toYear ? `SNS Archive ${fromYear}` : `SNS Archive ${fromYear}-${toYear}`;
 
@@ -702,7 +838,7 @@ function estimatePostPageCost(post: Record<string, any>, settings: Record<string
     .join("\n");
   const charsPerPage = isLandscape ? textColumnCount * 1250 : textColumnCount * 850;
   const textPages = Math.max(1, Math.ceil(bodyText.length / Math.max(450, charsPerPage)));
-  const imageCount = settings.pdfFields?.includes("images") ? Number(post.imageCount || post.imageUrls?.length || 0) : 0;
+  const imageCount = settings.pdfFields?.includes("images") ? pdfImagePathsFromPost(post).length : 0;
   const imagePages = Math.ceil(imageCount / (isLandscape ? 8 : 6));
 
   return textPages + imagePages;
@@ -825,10 +961,193 @@ function uniqueStrings(values: string[]) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-function postImagePaths(post: Record<string, any>) {
+const pdfOriginalImagePathCache = new Map<string, string>();
+
+function isUsablePdfImagePath(filePath: string) {
+  if (!filePath || !existsSync(filePath)) {
+    return false;
+  }
+
+  const extension = path.extname(filePath).toLowerCase();
+
+  if (![".jpg", ".jpeg", ".png"].includes(extension)) {
+    return false;
+  }
+
+  try {
+    return statSync(filePath).size > 512;
+  } catch {
+    return false;
+  }
+}
+
+function pdfImagePathsFromPost(post: Record<string, any>) {
   return Array.isArray(post.imageUrls)
-    ? post.imageUrls.map(mediaPathFromUrl).filter((filePath: string) => filePath && existsSync(filePath))
+    ? post.imageUrls
+        .map(mediaPathFromUrl)
+        .map((imagePath) => pdfOriginalImagePathCache.get(imagePath) || imagePath)
+        .filter(isUsablePdfImagePath)
     : [];
+}
+
+function lowResolutionPdfImage(filePath: string) {
+  try {
+    return statSync(filePath).size < 30000;
+  } catch {
+    return false;
+  }
+}
+
+function readJsonFileSyncSafe(filePath: string) {
+  try {
+    return JSON.parse(require("node:fs").readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function highQualityNaverImageUrls(url: string) {
+  if (!/^https?:\/\//i.test(url)) {
+    return [];
+  }
+
+  const normalized = url.replace(/\?type=[^&]+/i, "");
+  const isNaverImage = /(?:postfiles|blogfiles|blogthumb|phinf)\.pstatic\.net/i.test(normalized);
+
+  if (!isNaverImage) {
+    return [url];
+  }
+
+  return [
+    `${normalized}?type=w966`,
+    `${normalized}?type=w1`,
+    `${normalized}?type=w773`,
+    `${normalized}?type=w2`,
+    normalized,
+  ];
+}
+
+async function downloadPdfImageCandidate(url: string, targetPath: string) {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 SNS-Reader/0.1",
+      Referer: "https://blog.naver.com/",
+    },
+  });
+
+  if (!response.ok) {
+    return 0;
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+
+  if (bytes.length < 1024) {
+    return 0;
+  }
+
+  await writeFile(targetPath, bytes);
+  return bytes.length;
+}
+
+async function ensureHighQualityPdfImage(localPath: string) {
+  if (!isUsablePdfImagePath(localPath) || !lowResolutionPdfImage(localPath)) {
+    return;
+  }
+
+  const cached = pdfOriginalImagePathCache.get(localPath);
+
+  if (cached && isUsablePdfImagePath(cached)) {
+    return;
+  }
+
+  const mediaDir = path.dirname(localPath);
+  const meta = readJsonFileSyncSafe(path.join(mediaDir, "meta.json"));
+  const sourceUrls = Array.isArray(meta?.imageUrls) ? meta.imageUrls.map(String) : [];
+
+  if (sourceUrls.length === 0) {
+    return;
+  }
+
+  const copiedImages = Array.isArray(meta?.copiedImages) ? meta.copiedImages.map(String) : [];
+  const imageIndex = Math.max(0, copiedImages.indexOf(path.basename(localPath)));
+  const sourceUrl = sourceUrls[imageIndex] || sourceUrls[0];
+  const extension = path.extname(localPath) || ".jpg";
+  const targetPath = path.join(mediaDir, `${path.basename(localPath, extension)}.original${extension}`);
+
+  if (isUsablePdfImagePath(targetPath) && statSync(targetPath).size > statSync(localPath).size) {
+    pdfOriginalImagePathCache.set(localPath, targetPath);
+    return;
+  }
+
+  let bestBytes = statSync(localPath).size;
+
+  for (const candidateUrl of highQualityNaverImageUrls(sourceUrl)) {
+    const tempPath = `${targetPath}.tmp`;
+
+    try {
+      const bytes = await downloadPdfImageCandidate(candidateUrl, tempPath);
+
+      if (bytes > bestBytes * 1.5) {
+        await writeFile(targetPath, await readFile(tempPath));
+        pdfOriginalImagePathCache.set(localPath, targetPath);
+        bestBytes = bytes;
+        break;
+      }
+    } catch {
+      // Ignore failed image upgrades and keep the archived local image.
+    } finally {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+async function ensureHighQualityPdfImages(posts: Array<Record<string, any>>) {
+  const localPaths = uniqueStrings(
+    posts
+      .flatMap((post) => (Array.isArray(post.imageUrls) ? post.imageUrls : []))
+      .map((imageUrl) => mediaPathFromUrl(String(imageUrl)))
+      .filter(isUsablePdfImagePath)
+  );
+
+  await mapWithConcurrency(localPaths, 6, ensureHighQualityPdfImage);
+}
+
+function isMeaningfulPdfText(value: string) {
+  const normalized = String(value || "")
+    .replace(/[?\s.,:;!()[\]{}"'`~_-]/g, "")
+    .trim();
+
+  return /[A-Za-z0-9가-힣]/.test(normalized) && normalized.length >= 4;
+}
+
+function isImageOnlyPdfPost(post: Record<string, any>) {
+  const imagePaths = pdfImagePathsFromPost(post);
+
+  if (imagePaths.length === 0) {
+    return false;
+  }
+
+  const title = String(post.title || "").trim();
+  const body = String(post.body || post.bodyPreview || "").trim();
+  const textCandidates = [
+    body,
+    title && !/^\d{1,5}$/.test(title) ? title : "",
+  ];
+
+  return !textCandidates.some(isMeaningfulPdfText);
+}
+
+function defaultPdfSampleImagePaths() {
+  return [
+    path.join(process.cwd(), "assets", "heart-food-journal-cover.jpeg"),
+    path.join(process.cwd(), "assets", "korean-corner-pattern-1.jpeg"),
+    path.join(process.cwd(), "assets", "korean-corner-pattern-2.jpeg"),
+    path.join(process.cwd(), "assets", "korean-corner-pattern-3.jpeg"),
+  ].filter(isUsablePdfImagePath);
+}
+
+function postImagePaths(post: Record<string, any>) {
+  return pdfImagePathsFromPost(post);
 }
 
 function seededImageOrder(paths: string[], salt: string) {
@@ -840,14 +1159,155 @@ function seededImageOrder(paths: string[], salt: string) {
   });
 }
 
+function cleanPdfOverviewSummaryLine(value: string) {
+  return String(value || "")
+    .replace(/^[-*\u2022]\s+/, "")
+    .replace(/^\d+[.)]\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function lowInformationSummaryLine(value: string) {
+  const text = cleanPdfOverviewSummaryLine(value);
+
+  if (!text) {
+    return true;
+  }
+
+  return (
+    /\?{2,}/.test(text) ||
+    /Summary will be generated/i.test(text) ||
+    /본문\s*부족|원문\s*보강|링크성|제한된\s*내용|내용이\s*비어|알\s*수\s*없는|복원되지|핵심\s*주제|파악하기\s*어렵/i.test(text)
+  );
+}
+
+function summarySimilarityKey(value: string) {
+  return cleanPdfOverviewSummaryLine(value)
+    .replace(/\d{4}[-.]\d{2}[-.]\d{2}/g, "")
+    .replace(/\b(?:facebook|instagram|threads|youtube|naver-blog|x)\b/gi, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .toLowerCase()
+    .slice(0, 80);
+}
+
+function splitPdfSummarySentences(value: string) {
+  return cleanPdfOverviewSummaryLine(value)
+    .split(/(?<=[.!?。！？다요음임함됨됨니다습니다])\s+/u)
+    .map(cleanPdfOverviewSummaryLine)
+    .filter(Boolean);
+}
+
+function pushUniquePdfSummaryLine(lines: string[], seen: Set<string>, value: string, maxLines = 8) {
+  const line = cleanPdfOverviewSummaryLine(value);
+  const key = summarySimilarityKey(line);
+
+  if (!line || !key || seen.has(key) || lines.length >= maxLines) {
+    return;
+  }
+
+  seen.add(key);
+  lines.push(line);
+}
+
+function meaningfulTagLabels(tagCounts: Array<[string, number]>) {
+  const lowValueTags = new Set([
+    "SNS",
+    "sns",
+    "Facebook",
+    "Instagram",
+    "Threads",
+    "YouTube",
+    "NaverBlog",
+    "naver-blog",
+    "아카이브",
+    "짧은기록",
+    "링크성게시물",
+    "본문부족",
+    "원문보강",
+  ]);
+
+  return tagCounts
+    .map(([tag]) => String(tag || "").replace(/^#/, "").trim())
+    .filter((tag) => tag && !lowValueTags.has(tag) && !/[?�]/.test(tag))
+    .slice(0, 6);
+}
+
+function buildPdfOverviewSummaryLines(posts: Array<Record<string, any>>, tagCounts: Array<[string, number]>) {
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  const meaningfulSummaries = posts
+    .flatMap((post) => (Array.isArray(post.summaryLines) && post.summaryLines.length ? post.summaryLines : [post.summary]))
+    .flatMap((line) => splitPdfSummarySentences(String(line || "")))
+    .filter((line) => !lowInformationSummaryLine(line));
+  const lowInfoCount = posts.filter((post) => {
+    const body = String(post.body || post.bodyPreview || "").trim();
+    const summaries = Array.isArray(post.summaryLines) && post.summaryLines.length ? post.summaryLines : [post.summary];
+
+    return !isMeaningfulPdfText(body) || summaries.every((line: string) => lowInformationSummaryLine(line));
+  }).length;
+  const imagePostCount = posts.filter((post) => pdfImagePathsFromPost(post).length > 0).length;
+  const platforms = topEntries(countBy(posts, (post) => String(post.platformLabel || post.platform || "SNS")), 5).map(([label]) => label);
+  const topTags = meaningfulTagLabels(tagCounts);
+
+  pushUniquePdfSummaryLine(
+    lines,
+    seen,
+    `이 기간에는 ${posts.length}개의 글이 ${platforms.join(", ") || "SNS"}에서 아카이브되었습니다.`
+  );
+
+  for (const summary of meaningfulSummaries) {
+    pushUniquePdfSummaryLine(lines, seen, summary, 7);
+  }
+
+  if (lowInfoCount > 0) {
+    pushUniquePdfSummaryLine(
+      lines,
+      seen,
+      `본문이 짧거나 원문 보강이 필요한 글은 ${lowInfoCount}개이며, 이런 글은 이미지와 링크 맥락을 함께 보존하는 자료로 남겼습니다.`
+    );
+  }
+
+  if (imagePostCount > 0) {
+    pushUniquePdfSummaryLine(lines, seen, `이미지가 포함된 글은 ${imagePostCount}개이며, 사진 중심 글은 본문보다 시각 자료가 기록의 핵심이 되도록 배치했습니다.`);
+  }
+
+  if (topTags.length > 0) {
+    pushUniquePdfSummaryLine(lines, seen, `주요 TAG는 ${topTags.join(", ")} 흐름으로 묶이며, 같은 TAG를 공유하는 글들은 Mesh View에서 연결 관계를 확인할 수 있습니다.`);
+  }
+
+  if (lines.length <= 1) {
+    pushUniquePdfSummaryLine(lines, seen, "구체적인 본문이 부족한 글은 별도의 반복 요약 대신 원문 확인과 이미지 보강 대상으로 정리했습니다.");
+  }
+
+  return lines.slice(0, 8);
+}
+
 function resolvePdfFont(style: Record<string, any>) {
   const family = String(style.fontFamily || "").toLowerCase();
   const bold = Boolean(style.bold);
+  const configuredFont = String(bold ? style.fontBoldPath || style.fontRegularPath || "" : style.fontRegularPath || "").trim();
+
+  if (configuredFont && existsSync(configuredFont)) {
+    return configuredFont;
+  }
+
   const windowsFont =
-    family.includes("malgun") || family.includes("pretendard") || family.includes("noto") || family.includes("nanum")
+    family.includes("malgun")
       ? bold
         ? "C:\\Windows\\Fonts\\malgunbd.ttf"
         : "C:\\Windows\\Fonts\\malgun.ttf"
+      : family.includes("noto")
+        ? bold
+          ? "C:\\Windows\\Fonts\\NotoSansKR-Bold.ttf"
+          : "C:\\Windows\\Fonts\\NotoSansKR-Regular.ttf"
+        : family.includes("nanum")
+          ? bold
+            ? "C:\\Windows\\Fonts\\NanumGothicBold.ttf"
+            : "C:\\Windows\\Fonts\\NanumGothic.ttf"
+          : family.includes("kopub")
+            ? bold
+              ? "C:\\Windows\\Fonts\\KoPubBatangBold.ttf"
+              : "C:\\Windows\\Fonts\\KoPubBatangMedium.ttf"
       : "";
 
   if (windowsFont && existsSync(windowsFont)) {
@@ -884,7 +1344,7 @@ function ensurePdfSpace(doc: any, neededHeight: number) {
 }
 
 function pdfContentBottom(doc: any) {
-  return doc.page.height - doc.page.margins.bottom - 54;
+  return doc.page.height - doc.page.margins.bottom - 42;
 }
 
 function getPdfTextColumnCount(settings: Record<string, any>) {
@@ -949,14 +1409,26 @@ function drawKoreanCornerMotif(doc: any, x: number, y: number, flipX = 1, flipY 
     );
 }
 
-function cornerPatternPath() {
-  const primaryPath = path.join(process.cwd(), "assets", "korean-corner-pattern-1.jpeg");
+function resolvePdfAssetPath(configuredPath: string, fallbackPath: string) {
+  const value = String(configuredPath || "").trim();
+  const candidates = [
+    value ? path.resolve(value) : "",
+    value ? path.resolve(process.cwd(), value) : "",
+    fallbackPath,
+  ].filter(Boolean);
 
-  return existsSync(primaryPath) ? primaryPath : "";
+  return candidates.find((candidate) => existsSync(candidate)) || "";
+}
+
+function cornerPatternPath(doc: any) {
+  const primaryPath = path.join(process.cwd(), "assets", "korean-corner-pattern-1.jpeg");
+  const configuredPath = String(doc.snsReaderCornerPatternPath || "").trim();
+
+  return resolvePdfAssetPath(configuredPath, primaryPath);
 }
 
 function drawCornerPatternImages(doc: any, opacity = 0.5) {
-  const patternPath = cornerPatternPath();
+  const patternPath = cornerPatternPath(doc);
 
   if (!patternPath) {
     return;
@@ -1309,10 +1781,11 @@ function drawImageCell(doc: any, imagePath: string, x: number, y: number, width:
   try {
     doc.image(imagePath, x + 8, y + 8, { fit: [width - 16, height - 16], align: "center", valign: "center" });
   } catch {
-    doc.fillColor("#8a918d").font(resolvePdfFont({ fontFamily: "Malgun Gothic" })).fontSize(8).text("Image unavailable", x + 8, y + height / 2 - 5, {
-      align: "center",
-      width: width - 16,
-    });
+    const sampleImage = defaultPdfSampleImagePaths()[0];
+
+    if (sampleImage) {
+      doc.image(sampleImage, x + 8, y + 8, { fit: [width - 16, height - 16], align: "center", valign: "center" });
+    }
   }
 }
 
@@ -1323,7 +1796,13 @@ function drawCollageImage(doc: any, imagePath: string, x: number, y: number, wid
   try {
     doc.image(imagePath, x, y, { cover: [width, height], align: "center", valign: "center" });
   } catch {
-    doc.rect(x, y, width, height).fill("#b9cd92");
+    const sampleImage = defaultPdfSampleImagePaths()[0];
+
+    if (sampleImage) {
+      doc.image(sampleImage, x, y, { cover: [width, height], align: "center", valign: "center" });
+    } else {
+      doc.rect(x, y, width, height).fill("#b9cd92");
+    }
   }
 
   doc.restore();
@@ -1338,7 +1817,7 @@ function drawImageCollagePage(doc: any, imagePaths: string[], title = "") {
   const width = pageWidth - outer * 2;
   const height = pageHeight - outer * 2;
   const cellGap = 5;
-  const selectedImages = imagePaths.length ? imagePaths : [];
+  const selectedImages = imagePaths.length ? imagePaths : defaultPdfSampleImagePaths();
   const cells = [
     [0, 0, 0.24, 0.28],
     [0, 0.28, 0.24, 0.5],
@@ -1415,7 +1894,15 @@ function drawPostImageCollage(doc: any, imagePaths: string[], x: number, y: numb
         valign: "center",
       });
     } catch {
-      doc.rect(x + column * (cellWidth + gap) + 6, y + row * (cellHeight + gap) + 6, cellWidth - 12, cellHeight - 12).stroke();
+      const sampleImage = defaultPdfSampleImagePaths()[0];
+
+      if (sampleImage) {
+        doc.image(sampleImage, x + column * (cellWidth + gap) + 6, y + row * (cellHeight + gap) + 6, {
+          fit: [cellWidth - 12, cellHeight - 12],
+          align: "center",
+          valign: "center",
+        });
+      }
     }
   });
 
@@ -1426,6 +1913,79 @@ function drawPostImageCollage(doc: any, imagePaths: string[], x: number, y: numb
       .fillColor("#1f6f68")
       .text(`+${imagePaths.length - visibleImages.length} images`, x + 8, y + height - 18, { align: "right", width: width - 16 });
   }
+}
+
+function drawFullPagePostImages(doc: any, imagePaths: string[], x: number, y: number, width: number, height: number) {
+  if (imagePaths.length <= 1) {
+    drawImageCell(doc, imagePaths[0], x, y, width, height);
+    return;
+  }
+
+  const gap = 6;
+  const columns = Math.max(1, Math.ceil(Math.sqrt(imagePaths.length * (width / Math.max(1, height)))));
+  const rows = Math.max(1, Math.ceil(imagePaths.length / columns));
+  const cellWidth = (width - gap * (columns - 1)) / columns;
+  const cellHeight = (height - gap * (rows - 1)) / rows;
+
+  doc.save();
+  doc.roundedRect(x, y, width, height, 4).fill("#f4f4f1");
+  doc.strokeColor("#ddddda").lineWidth(0.55).roundedRect(x, y, width, height, 4).stroke();
+  doc.restore();
+
+  imagePaths.forEach((imagePath, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const cellX = x + column * (cellWidth + gap);
+    const cellY = y + row * (cellHeight + gap);
+
+    drawCollageImage(doc, imagePath, cellX, cellY, cellWidth, cellHeight);
+  });
+}
+
+function drawImageOnlyPdfPostPage(doc: any, post: Record<string, any>, settings: Record<string, any>, styles: Record<string, any>) {
+  const imagePaths = pdfImagePathsFromPost(post);
+  const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const topY = doc.y;
+  const bottom = pdfContentBottom(doc);
+  const availableHeight = Math.max(120, bottom - topY);
+
+  if (!settings.pdfFields?.includes("images") || imagePaths.length === 0) {
+    return false;
+  }
+
+  doc.save();
+  applyPdfTextStyle(doc, styles, "tags");
+  doc.fontSize(7.8).fillColor("#1f6f68").text(String(post.platformLabel || post.platform || "SNS").toUpperCase(), doc.page.margins.left, topY, {
+    lineBreak: false,
+    width: pageWidth * 0.5,
+  });
+  applyPdfTextStyle(doc, styles, "date");
+  doc.text(String(post.date || post.dateIso || ""), doc.page.margins.left + pageWidth * 0.5, topY, {
+    align: "right",
+    lineBreak: false,
+    width: pageWidth * 0.5,
+  });
+  doc.restore();
+
+  const titleText = String(post.title || "Untitled Post");
+  const titleY = topY + 22;
+  const titleStyle = applyPdfTextStyle(doc, styles, "title");
+  const titleFontSize = Number(titleStyle.fontSize || 13);
+  const titleLineHeight = titleFontSize * Number(titleStyle.lineHeight || 1.25);
+  const titleLines = wrapPdfLines(doc, titleText, pageWidth).slice(0, 2);
+
+  titleLines.forEach((line, index) => {
+    doc.text(line, doc.page.margins.left, titleY + index * titleLineHeight, {
+      lineBreak: false,
+      underline: Boolean(titleStyle.underline),
+      width: pageWidth,
+    });
+  });
+
+  const imageY = titleY + Math.max(titleLineHeight, titleLines.length * titleLineHeight) + 18;
+  drawFullPagePostImages(doc, imagePaths, doc.page.margins.left, imageY, pageWidth, Math.max(120, bottom - imageY));
+
+  return true;
 }
 
 function drawImagesInColumnThenPages(doc: any, imagePaths: string[], x: number, y: number, width: number, firstPageSingleColumn: boolean) {
@@ -1487,9 +2047,7 @@ function drawPostContentColumns(doc: any, post: Record<string, any>, settings: R
   const bottom = pdfContentBottom(doc);
   const innerWidth = columnWidth - 24;
   const lines = buildPdfContentLines(doc, post, settings, styles, innerWidth);
-  const imagePaths = Array.isArray(post.imageUrls)
-    ? post.imageUrls.map(mediaPathFromUrl).filter((filePath: string) => filePath && existsSync(filePath))
-    : [];
+  const imagePaths = pdfImagePathsFromPost(post);
   const imageLayout = String(settings.imageLayout || "collage");
   const leftCapacity = Math.max(0, bottom - startY - 20);
   const textFitsLeft = measureContentLines(lines) <= leftCapacity;
@@ -1789,69 +2347,177 @@ function drawWordCloud(doc: any, tagCounts: Array<[string, number]>, x: number, 
 }
 
 function drawMeshView(doc: any, posts: Array<Record<string, any>>, tagCounts: Array<[string, number]>, x: number, y: number, width: number, height: number) {
-  const tags = tagCounts.slice(0, 10).map(([tag]) => tag);
-  const meshPosts = posts.filter((post) => Array.isArray(post.tags) && post.tags.some((tag: string) => tags.includes(tag))).slice(0, 24);
-  const centerX = x + width / 2;
-  const centerY = y + height / 2;
-  const tagRadius = Math.min(width, height) * 0.18;
-  const postRadius = Math.min(width, height) * 0.42;
-  const tagPositions = new Map<string, { x: number; y: number }>();
+  const postTagMap = new Map<string, string[]>();
+  const topTagEntries: Array<[string, number]> = tagCounts
+    .map(([tag, count]) => [String(tag).replace(/^#/, ""), Number(count)] as [string, number])
+    .filter(([tag]) => tag && !genericMeshTags.has(tag.toLowerCase()))
+    .slice(0, 18);
+  const topTags = topTagEntries.map(([tag]) => tag);
+  const tagNames = new Set(topTags);
+  const edgeWeights = new Map<string, PdfMeshEdge>();
+  const postDegrees = new Map<string, number>();
+  const postsByVisibleTag = new Map<string, string[]>();
+  const graphPosts = posts;
   const postPositions = new Map<string, { x: number; y: number }>();
+  const tagPanelGap = width > 340 ? 12 : 8;
+  const tagPanelWidth = Math.min(120, Math.max(84, width * 0.24));
+  const graphX = x;
+  const graphY = y;
+  const graphWidth = Math.max(90, width - tagPanelWidth - tagPanelGap);
+  const graphHeight = height;
+  const tagPanelX = graphX + graphWidth + tagPanelGap;
+  const centerX = graphX + graphWidth / 2;
+  const centerY = graphY + graphHeight / 2;
+  const radius = Math.min(graphWidth, graphHeight) * 0.45;
 
-  tags.forEach((tag, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, tags.length) - Math.PI / 2;
-    tagPositions.set(tag, {
-      x: centerX + Math.cos(angle) * tagRadius,
-      y: centerY + Math.sin(angle) * tagRadius,
-    });
+  graphPosts.forEach((post) => {
+    const tags = semanticTagsFromPost(post);
+
+    postDegrees.set(post.id, 0);
+
+    if (tags.length) {
+      postTagMap.set(post.id, tags);
+    }
   });
 
-  meshPosts.forEach((post, index) => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, meshPosts.length) - Math.PI / 2;
+  graphPosts.forEach((post) => {
+    (postTagMap.get(post.id) ?? [])
+      .filter((tag) => tagNames.has(tag))
+      .forEach((tag) => {
+        const postIds = postsByVisibleTag.get(tag) ?? [];
+
+        postIds.push(post.id);
+        postsByVisibleTag.set(tag, postIds);
+      });
+  });
+
+  postsByVisibleTag.forEach((postIds, tag) => {
+    for (let leftIndex = 0; leftIndex < postIds.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < postIds.length; rightIndex += 1) {
+        const from = postIds[leftIndex];
+        const to = postIds[rightIndex];
+        const key = pdfEdgeKey(from, to);
+        const existingEdge = edgeWeights.get(key);
+
+        if (existingEdge) {
+          existingEdge.sharedTags.push(tag);
+          existingEdge.weight += 1;
+        } else {
+          edgeWeights.set(key, { from, to, sharedTags: [tag], weight: 1 });
+        }
+
+        postDegrees.set(from, (postDegrees.get(from) ?? 0) + 1);
+        postDegrees.set(to, (postDegrees.get(to) ?? 0) + 1);
+      }
+    }
+  });
+
+  const sortedEdges = Array.from(edgeWeights.values()).sort(
+    (left, right) => right.weight - left.weight || (postDegrees.get(right.from) ?? 0) - (postDegrees.get(left.from) ?? 0)
+  );
+  const visibleEdges = selectBalancedPdfMeshEdges(sortedEdges, pdfMeshVisibleEdgeLimit);
+  const maxDegree = Math.max(1, ...Array.from(postDegrees.values()));
+  const layoutPosts = [...graphPosts].sort((left, right) => {
+    const degreeDelta = (postDegrees.get(right.id) ?? 0) - (postDegrees.get(left.id) ?? 0);
+
+    return degreeDelta || String(left.dateIso || "").localeCompare(String(right.dateIso || "")) || String(left.id).localeCompare(String(right.id));
+  });
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+  layoutPosts.forEach((post, index) => {
+    const degree = postDegrees.get(post.id) ?? 0;
+    const degreeRatio = Math.sqrt(degree / maxDegree);
+    const baseRadius = Math.sqrt((index + 0.5) / Math.max(1, layoutPosts.length));
+    const radialJitter = (hashToUnit(post.filePath || post.id, 31) - 0.5) * 0.08;
+    const radial = clampNumber(baseRadius * (1 - degreeRatio * 0.22) + radialJitter, 0.06, 0.98);
+    const angle = index * goldenAngle + hashToUnit(String(post.id) + String(post.dateIso || ""), 17) * 0.42;
+    const jitterX = (hashToUnit(String(post.title || "") + String(post.id), 47) - 0.5) * radius * 0.045;
+    const jitterY = (hashToUnit(String(post.id) + String(post.platform || ""), 59) - 0.5) * radius * 0.045;
+
     postPositions.set(post.id, {
-      x: centerX + Math.cos(angle) * postRadius,
-      y: centerY + Math.sin(angle) * postRadius,
+      x: clampNumber(centerX + Math.cos(angle) * radius * radial + jitterX, graphX + 10, graphX + graphWidth - 10),
+      y: clampNumber(centerY + Math.sin(angle) * radius * radial + jitterY, graphY + 10, graphY + graphHeight - 10),
     });
   });
 
   doc.save();
   doc.roundedRect(x, y, width, height, 5).fill("#f4f4f1");
   doc.strokeColor("#d8ded9").lineWidth(0.8).roundedRect(x, y, width, height, 5).stroke();
+  doc.strokeColor("#e0e4df").lineWidth(0.6).moveTo(tagPanelX - tagPanelGap / 2, y + 10).lineTo(tagPanelX - tagPanelGap / 2, y + height - 10).stroke();
   doc.strokeColor("#ececea").lineWidth(0.35);
   for (let index = 0; index < 7; index += 1) {
-    const guideX = x + 42 + index * 70;
-    doc.moveTo(guideX, y + 24).lineTo(guideX + 28, y + height - 24);
+    const guideX = graphX + 28 + index * Math.max(32, graphWidth / 7.5);
+    doc.moveTo(guideX, graphY + 24).lineTo(guideX + 22, graphY + graphHeight - 24);
   }
   doc.stroke();
 
-  for (const post of meshPosts) {
-    const postPoint = postPositions.get(post.id);
+  visibleEdges.forEach((edge) => {
+    const from = postPositions.get(edge.from);
+    const to = postPositions.get(edge.to);
 
-    if (!postPoint) {
-      continue;
+    if (!from || !to) {
+      return;
     }
 
-    for (const tag of post.tags ?? []) {
-      const tagPoint = tagPositions.get(tag);
-
-      if (!tagPoint) {
-        continue;
-      }
-
-      doc.strokeColor("#9cb7af").lineWidth(0.4).moveTo(postPoint.x, postPoint.y).lineTo(tagPoint.x, tagPoint.y).stroke();
-    }
-  }
-
-  tagPositions.forEach((point, tag) => {
-    doc.fillColor("#1f6f68").circle(point.x, point.y, 10).fill();
-    doc.fillColor("#222222").font(resolvePdfFont({ bold: true, fontFamily: "Malgun Gothic" })).fontSize(7).text(`#${tag}`, point.x - 38, point.y + 13, {
-      width: 76,
-      align: "center",
-    });
+    doc.strokeColor("#9cb7af").lineWidth(0.25 + Math.min(3, edge.weight) * 0.08).moveTo(from.x, from.y).lineTo(to.x, to.y).stroke();
   });
 
-  postPositions.forEach((point) => {
-    doc.fillColor("#7b4d8f").circle(point.x, point.y, 4).fill();
+  graphPosts.forEach((post) => {
+    const point = postPositions.get(post.id);
+
+    if (!point) {
+      return;
+    }
+
+    const degree = postDegrees.get(post.id) ?? 0;
+    const radiusSize = 0.8 + Math.sqrt(degree / maxDegree) * 2.2;
+    const color = String(post.platform || "") === "facebook"
+      ? "#2f7de1"
+      : String(post.platform || "") === "instagram"
+        ? "#c64f8a"
+        : String(post.platform || "") === "threads"
+          ? "#a78aef"
+          : String(post.platform || "") === "youtube"
+            ? "#d83b3b"
+            : String(post.platform || "") === "naver-blog"
+              ? "#18a05e"
+              : "#8a96a3";
+
+    doc.fillColor(color).circle(point.x, point.y, radiusSize).fill();
+  });
+
+  doc
+    .font(resolvePdfFont({ bold: true, fontFamily: "Malgun Gothic" }))
+    .fontSize(8)
+    .fillColor("#1f6f68")
+    .text("Top TAG", tagPanelX + 8, y + 14, {
+      lineBreak: false,
+      width: tagPanelWidth - 16,
+    });
+
+  const rowHeight = 16;
+  const maxRows = Math.max(1, Math.floor((height - 42) / rowHeight));
+  topTagEntries.slice(0, maxRows).forEach(([tag, count], index) => {
+    const rowY = y + 34 + index * rowHeight;
+
+    doc.strokeColor("#dfe4df").lineWidth(0.35).moveTo(tagPanelX + 8, rowY + rowHeight - 3).lineTo(tagPanelX + tagPanelWidth - 8, rowY + rowHeight - 3).stroke();
+    doc
+      .font(resolvePdfFont({ bold: true, fontFamily: "Malgun Gothic" }))
+      .fontSize(6.6)
+      .fillColor("#27302d")
+      .text(truncatePdfLabel(tag, 11), tagPanelX + 8, rowY, {
+        lineBreak: false,
+        width: tagPanelWidth - 36,
+      });
+    doc
+      .font(resolvePdfFont({ bold: true, fontFamily: "Malgun Gothic" }))
+      .fontSize(6.6)
+      .fillColor("#1f6f68")
+      .text(String(count), tagPanelX + tagPanelWidth - 28, rowY, {
+        align: "right",
+        lineBreak: false,
+        width: 20,
+      });
   });
   doc.restore();
 }
@@ -1861,9 +2527,14 @@ function drawPostImages(doc: any, post: Record<string, any>, settings: Record<st
     return;
   }
 
-  drawHeading(doc, "Images");
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const imagePaths = post.imageUrls.map(mediaPathFromUrl).filter((filePath: string) => filePath && existsSync(filePath));
+  const imagePaths = pdfImagePathsFromPost(post);
+
+  if (imagePaths.length === 0) {
+    return;
+  }
+
+  drawHeading(doc, "Images");
 
   if (settings.imageLayout === "collage") {
     const columns = 2;
@@ -1882,7 +2553,11 @@ function drawPostImages(doc: any, post: Record<string, any>, settings: Record<st
       try {
         doc.image(imagePath, x, y, { fit: [cellWidth, cellHeight], align: "center", valign: "center" });
       } catch {
-        doc.rect(x, y, cellWidth, cellHeight).stroke();
+        const sampleImage = defaultPdfSampleImagePaths()[0];
+
+        if (sampleImage) {
+          doc.image(sampleImage, x, y, { fit: [cellWidth, cellHeight], align: "center", valign: "center" });
+        }
       }
 
       if (index % columns === columns - 1 || index === imagePaths.length - 1) {
@@ -1900,8 +2575,12 @@ function drawPostImages(doc: any, post: Record<string, any>, settings: Record<st
       doc.image(imagePath, doc.page.margins.left, doc.y, { fit: [pageWidth, imageHeight], align: "center", valign: "center" });
       doc.y += imageHeight + 16;
     } catch {
-      doc.rect(doc.page.margins.left, doc.y, pageWidth, 80).stroke();
-      doc.y += 96;
+      const sampleImage = defaultPdfSampleImagePaths()[0];
+
+      if (sampleImage) {
+        doc.image(sampleImage, doc.page.margins.left, doc.y, { fit: [pageWidth, imageHeight], align: "center", valign: "center" });
+        doc.y += imageHeight + 16;
+      }
     }
   }
 }
@@ -1931,24 +2610,67 @@ const legacyPdfStyles: Record<string, Record<string, unknown>> = {
   tags: { fontSize: 9, lineHeight: 1.25 },
 };
 
-function normalizePdfStylesForBook(savedStyles: Record<string, any> = {}, requestStyles: Record<string, any> = {}) {
+function normalizePdfFontFamily(fontFamily: string) {
+  return fontFamily === "Nanum Gothic" ? "NanumGothic" : fontFamily;
+}
+
+function resolvePdfFontCatalog(settings: Record<string, any>) {
+  const fonts = Array.isArray(settings.pdfFonts) ? settings.pdfFonts : [];
+  const entries: Array<[string, { family: string; regularPath: string; boldPath: string }]> = [];
+
+  for (const font of fonts) {
+    const family = normalizePdfFontFamily(String(font.fontFamily || font.label || "").trim());
+
+    if (!family) {
+      continue;
+    }
+
+    entries.push([
+      family.toLowerCase(),
+      {
+        family,
+        regularPath: String(font.regularPath || "").trim(),
+        boldPath: String(font.boldPath || "").trim(),
+      },
+    ]);
+  }
+
+  return new Map(entries);
+}
+
+function normalizePdfStylesForBook(savedStyles: Record<string, any> = {}, requestStyles: Record<string, any> = {}, settings: Record<string, any> = {}) {
+  const fontCatalog = resolvePdfFontCatalog(settings);
+
   return Object.fromEntries(
     Object.entries(compactPdfStyles).map(([target, defaultStyle]) => {
       const incomingStyle = { ...(savedStyles[target] ?? {}), ...(requestStyles[target] ?? {}) };
       const legacyStyle = legacyPdfStyles[target];
       const isLegacyDefault = Object.entries(legacyStyle).every(([key, value]) => incomingStyle[key] === value);
+      const style = isLegacyDefault ? { ...defaultStyle } : { ...defaultStyle, ...incomingStyle };
+      const fontFamily = normalizePdfFontFamily(String(style.fontFamily || ""));
+      const font = fontCatalog.get(fontFamily.toLowerCase());
 
-      return [target, isLegacyDefault ? defaultStyle : { ...defaultStyle, ...incomingStyle }];
+      return [
+        target,
+        {
+          ...style,
+          fontFamily,
+          fontRegularPath: font?.regularPath || "",
+          fontBoldPath: font?.boldPath || font?.regularPath || "",
+        },
+      ];
     })
   );
 }
 
 function resolvePdfCoverImagePath(settings: Record<string, any>) {
-  const configuredPath = String(settings.pdfCoverImagePath || "").trim();
+  const isLandscape = settings.pdfPageOrientation === "landscape";
+  const orientedPath = isLandscape ? settings.pdfLandscapeCoverImagePath : settings.pdfPortraitCoverImagePath;
+  const configuredPath = String(orientedPath || settings.pdfCoverImagePath || "").trim();
   const candidates = [
     configuredPath ? path.resolve(configuredPath) : "",
     configuredPath ? path.resolve(process.cwd(), configuredPath) : "",
-    path.join(process.cwd(), "assets", "heart-food-journal-cover.jpeg"),
+    path.join(process.cwd(), "assets", isLandscape ? "Cover-Wide2.png" : "Cover-Long3.jpeg"),
   ].filter(Boolean);
 
   return candidates.find((candidate) => existsSync(candidate)) || "";
@@ -1961,6 +2683,7 @@ async function writePdfBook(
     cardsPayload?: MarkdownCardsPayload;
     posts?: Array<Record<string, any>>;
     range?: PdfBookRange;
+    fileName?: string;
     volumeIndex?: number;
     volumeCount?: number;
   } = {}
@@ -1970,8 +2693,8 @@ async function writePdfBook(
   const settings = {
     ...savedSettings,
     ...requestSettings,
-    pdfStyles: normalizePdfStylesForBook(savedSettings.pdfStyles, requestSettings.pdfStyles),
   };
+  settings.pdfStyles = normalizePdfStylesForBook(savedSettings.pdfStyles, requestSettings.pdfStyles, settings);
   const cardsPayload = options.cardsPayload ?? await buildMarkdownCards(settingsFilePath);
   const posts = options.posts ?? filterPdfPosts(cardsPayload.cards, settings);
 
@@ -1980,21 +2703,19 @@ async function writePdfBook(
   }
 
   const baseRange = options.range ?? getPdfRange(settings, cardsPayload.cards);
-  const volumeSuffix = options.volumeCount && options.volumeCount > 1 ? ` Vol ${String(options.volumeIndex ?? 1).padStart(2, "0")}` : "";
   const testLabel = String(settings.pdfBookLabel || "").trim();
   const labelSuffix = testLabel ? ` ${testLabel}` : "";
+  const pdfPageLayout = settings.pdfPageOrientation === "landscape" ? "landscape" : "portrait";
   const range = {
     ...baseRange,
-    title: `${baseRange.title}${volumeSuffix}${labelSuffix}`,
-    label: volumeSuffix ? `${baseRange.label} / ${volumeSuffix.trim()}` : baseRange.label,
+    title: `${baseRange.title}${labelSuffix}`,
+    label: baseRange.label,
   };
   const outputRoot = path.resolve(settings.pdfOutputFolder || path.join(process.cwd(), "exports", "pdf"));
-  const createdStamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*$/, "");
-  const fileName = `${sanitizeFileSegment(range.title)}_${createdStamp}.pdf`;
+  const fileName = String(options.fileName || pdfOutputFileName(baseRange));
   const pdfPath = path.join(outputRoot, fileName);
-  const metaPath = pdfPath.replace(/\.pdf$/i, ".json");
+  const metaPath = pdfMetadataPath(pdfPath);
   const styles = settings.pdfStyles ?? {};
-  const pdfPageLayout = settings.pdfPageOrientation === "landscape" ? "landscape" : "portrait";
 
   await mkdir(outputRoot, { recursive: true });
 
@@ -2011,6 +2732,7 @@ async function writePdfBook(
     },
   });
   doc.snsReaderPageLayout = pdfPageLayout;
+  doc.snsReaderCornerPatternPath = String(settings.pdfCornerPatternPath || "");
   const stream = createWriteStream(pdfPath);
   const finished = new Promise<void>((resolve, reject) => {
     stream.on("finish", resolve);
@@ -2019,14 +2741,12 @@ async function writePdfBook(
 
   doc.pipe(stream);
 
+  await ensureHighQualityPdfImages(posts);
+
   const platforms = topEntries(countBy(posts, (post) => String(post.platformLabel || post.platform || "SNS")), 12);
   const allTags = posts.flatMap((post) => (Array.isArray(post.tags) ? post.tags : []));
   const tagCounts = topEntries(countBy(allTags, (tag) => String(tag).replace(/^#/, "")), 40);
-  const summaryLines = posts
-    .flatMap((post) => (Array.isArray(post.summaryLines) && post.summaryLines.length ? post.summaryLines : [post.summary]))
-    .map((line) => String(line || "").replace(/^[-*]\s+/, "").trim())
-    .filter((line) => line && !/Summary will be generated/i.test(line))
-    .slice(0, 10);
+  const summaryLines = buildPdfOverviewSummaryLines(posts, tagCounts);
   const bins = makePeriodBins(posts);
   const topPosts = posts
     .map((post) => ({ post, score: reactionScore(post) }))
@@ -2106,7 +2826,7 @@ async function writePdfBook(
   const overviewTop = 134;
   const overviewBottom = pdfContentBottom(doc);
   const summaryPanelLines = summaryLines.length
-    ? summaryLines.map((line, index) => `${index + 1}. ${line}`)
+    ? [summaryLines.join(" ")]
     : ["Summary will be generated after Summary and TAG enrichment."];
   const isLandscapePdf = settings.pdfPageOrientation === "landscape";
 
@@ -2124,7 +2844,7 @@ async function writePdfBook(
 
     drawPanelTitle(doc, "Summary", overviewX, leftY, leftWidth);
     leftY += panelTitleHeight;
-    drawFixedTextPanel(doc, summaryPanelLines, styles, "summary", overviewX, leftY, leftWidth, summaryPanelHeight, "center");
+    drawFixedTextPanel(doc, summaryPanelLines, styles, "summary", overviewX, leftY, leftWidth, summaryPanelHeight, "left");
     leftY += summaryPanelHeight + panelGap;
 
     drawPanelTitle(doc, "Postings", overviewX, leftY, leftWidth);
@@ -2135,14 +2855,14 @@ async function writePdfBook(
     drawWordCloud(doc, tagCounts, rightX, overviewTop + panelTitleHeight, rightWidth, thinkingPanelHeight);
   } else {
     const overviewBoxTotal = overviewBottom - overviewTop - panelTitleHeight * 3 - panelGap * 2;
-    const summaryPanelHeight = Math.round(overviewBoxTotal * 0.2);
-    const thinkingPanelHeight = Math.round(overviewBoxTotal * 0.4);
+    const summaryPanelHeight = Math.round(overviewBoxTotal * 0.26);
+    const thinkingPanelHeight = Math.round(overviewBoxTotal * 0.37);
     const postingsPanelHeight = overviewBoxTotal - summaryPanelHeight - thinkingPanelHeight;
     let overviewY = overviewTop;
 
     drawPanelTitle(doc, "Summary", overviewX, overviewY, overviewWidth);
     overviewY += panelTitleHeight;
-    drawFixedTextPanel(doc, summaryPanelLines, styles, "summary", overviewX, overviewY, overviewWidth, summaryPanelHeight, "center");
+    drawFixedTextPanel(doc, summaryPanelLines, styles, "summary", overviewX, overviewY, overviewWidth, summaryPanelHeight, "left");
     overviewY += summaryPanelHeight + panelGap;
 
     drawPanelTitle(doc, "Thinking", overviewX, overviewY, overviewWidth);
@@ -2212,6 +2932,10 @@ async function writePdfBook(
       drawMonthHeader(doc, nextMonthKey, monthSequence, monthCounts.get(nextMonthKey) ?? 0);
     }
 
+    if (isImageOnlyPdfPost(post) && drawImageOnlyPdfPostPage(doc, post, settings, styles)) {
+      continue;
+    }
+
     applyPdfTextStyle(doc, styles, "tags");
     doc.x = doc.page.margins.left;
     doc.text(String(post.platformLabel || post.platform || "SNS").toUpperCase(), doc.page.margins.left, doc.y, {
@@ -2264,6 +2988,7 @@ async function writePdfBook(
     createdAt: new Date().toLocaleDateString("ko-KR"),
   };
 
+  await mkdir(path.dirname(metaPath), { recursive: true });
   await writeFile(metaPath, `${JSON.stringify(book, null, 2)}\n`, "utf8");
 
   return book;
@@ -2275,8 +3000,8 @@ async function writePdfBooks(settingsFilePath: string, requestSettings: Record<s
   const settings = {
     ...savedSettings,
     ...requestSettings,
-    pdfStyles: normalizePdfStylesForBook(savedSettings.pdfStyles, requestSettings.pdfStyles),
   };
+  settings.pdfStyles = normalizePdfStylesForBook(savedSettings.pdfStyles, requestSettings.pdfStyles, settings);
   const cardsPayload = await buildMarkdownCards(settingsFilePath);
 
   if (settings.pdfSplitMode === "year") {
@@ -2310,17 +3035,21 @@ async function writePdfBooks(settingsFilePath: string, requestSettings: Record<s
     const posts = filterCardsByRange(cardsPayload.cards, range);
     const chunks = chunkPostsByTargetPages(posts, settings);
     const books = [];
+    const usedFileNames = new Set<string>();
 
     if (chunks.length === 0) {
       throw new Error("PDF에 포함할 Markdown 카드가 없습니다.");
     }
 
     for (const chunk of chunks) {
+      const chunkRange = pdfRangeFromPosts(chunk);
+
       books.push(
         await writePdfBook(settingsFilePath, settings, {
           cardsPayload,
           posts: chunk,
-          range,
+          range: chunkRange,
+          fileName: pdfOutputFileNameForRange(chunkRange, usedFileNames),
           volumeCount: chunks.length,
           volumeIndex: books.length + 1,
         })
@@ -2361,15 +3090,20 @@ async function buildPdfBooks(settingsFilePath: string) {
   const books = [];
 
   for (const filePath of files) {
-    const metadata = await readFile(filePath.replace(/\.pdf$/i, ".json"), "utf8")
+    const metadata = await readFile(pdfMetadataPath(filePath), "utf8")
       .then((raw) => JSON.parse(raw))
+      .catch(() => readFile(filePath.replace(/\.pdf$/i, ".json"), "utf8").then((raw) => JSON.parse(raw)))
       .catch(() => ({}));
     const fileStat = await stat(filePath).catch(() => null);
+    const fileNameMatch = path.basename(filePath, ".pdf").match(/^SNS\s+(\d{4})\.(\d{2})-(\d{4})\.(\d{2})/);
+    const parsedDateRange = fileNameMatch
+      ? `${fileNameMatch[1]}.${fileNameMatch[2]}.01 - ${fileNameMatch[3]}.${fileNameMatch[4]}.31`
+      : "";
 
     books.push({
       id: filePath,
       title: metadata.title || path.basename(filePath, ".pdf"),
-      dateRange: metadata.dateRange || "",
+      dateRange: metadata.dateRange || parsedDateRange,
       pageCount: Number(metadata.pageCount || 0),
       postCount: Number(metadata.postCount || 0),
       filePath,
@@ -3004,7 +3738,7 @@ export default defineConfig(() => {
           });
           server.middlewares.use("/api/pdf-file", async (request, response) => {
             try {
-              if (request.method !== "GET") {
+              if (request.method !== "GET" && request.method !== "DELETE") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
               }
@@ -3017,6 +3751,14 @@ export default defineConfig(() => {
 
               if (!filePath.toLowerCase().endsWith(".pdf") || !isPathInside(filePath, root)) {
                 sendJson(response, 403, { error: "PDF path is outside the configured PDF folder." });
+                return;
+              }
+
+              if (request.method === "DELETE") {
+                await rm(filePath, { force: true });
+                await rm(pdfMetadataPath(filePath), { force: true });
+                await rm(filePath.replace(/\.pdf$/i, ".json"), { force: true });
+                sendJson(response, 200, { ok: true });
                 return;
               }
 

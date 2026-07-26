@@ -1190,6 +1190,7 @@ input[type="checkbox"] {
 
 .pdf-card {
   display: grid;
+  position: relative;
   grid-template-columns: 132px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
@@ -1202,6 +1203,41 @@ input[type="checkbox"] {
   text-align: left;
   min-height: 190px;
   padding: 10px;
+}
+
+.pdf-card-cover,
+.pdf-card-body {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.pdf-card-hit-area {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  padding: 0;
+}
+
+.pdf-card-delete {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #9c5a52;
+}
+
+.pdf-card-delete:hover {
+  color: #d9685a;
 }
 
 .dark .pdf-card {
@@ -1610,6 +1646,16 @@ input[type="checkbox"] {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.pdf-creator-actions > .ghost-action,
+.pdf-creator-actions > .primary-action {
+  min-width: 82px;
+  padding: 0 18px;
+}
+
+.pdf-save-action {
+  background: transparent;
 }
 
 .dark .modal-header,
@@ -2463,10 +2509,39 @@ input[type="checkbox"] {
   gap: 12px;
 }
 
+.pdf-cover-image-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pdf-cover-image-grid label,
+.pdf-cover-image-grid input {
+  width: 100%;
+}
+
 .style-toggle-row {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.font-management {
+  display: grid;
+  gap: 12px;
+}
+
+.font-management > .ghost-action {
+  justify-self: start;
+}
+
+.font-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.font-form-grid .primary-action {
+  align-self: end;
+  justify-self: start;
 }
 
 .pdf-style-preview {
@@ -2617,6 +2692,14 @@ input[type="checkbox"] {
   }
 
   .pdf-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .pdf-cover-image-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .font-form-grid {
     grid-template-columns: 1fr;
   }
 }

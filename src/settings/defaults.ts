@@ -1,5 +1,7 @@
 ﻿import type { AppSettings, ExportField, PdfStyleTarget, PdfTextStyle, SnsPlatform } from "../types/domain";
 
+import type { PdfFontConfig } from "../types/domain";
+
 export const SETTINGS_STORAGE_KEY = "sns-reader.settings.v2";
 
 export const platformLabels: Record<SnsPlatform, string> = {
@@ -29,6 +31,37 @@ const defaultPdfTextStyle: PdfTextStyle = {
   lineHeight: 1.2
 };
 
+export const defaultPdfFonts: PdfFontConfig[] = [
+  {
+    id: "malgun-gothic",
+    label: "Malgun Gothic",
+    fontFamily: "Malgun Gothic",
+    regularPath: "C:\\Windows\\Fonts\\malgun.ttf",
+    boldPath: "C:\\Windows\\Fonts\\malgunbd.ttf"
+  },
+  {
+    id: "noto-sans-kr",
+    label: "Noto Sans KR",
+    fontFamily: "Noto Sans KR",
+    regularPath: "C:\\Windows\\Fonts\\NotoSansKR-Regular.ttf",
+    boldPath: "C:\\Windows\\Fonts\\NotoSansKR-Bold.ttf"
+  },
+  {
+    id: "nanum-gothic",
+    label: "Nanum Gothic",
+    fontFamily: "NanumGothic",
+    regularPath: "C:\\Windows\\Fonts\\NanumGothic.ttf",
+    boldPath: "C:\\Windows\\Fonts\\NanumGothicBold.ttf"
+  },
+  {
+    id: "kopub-batang",
+    label: "KoPub Batang",
+    fontFamily: "KoPub Batang",
+    regularPath: "C:\\Windows\\Fonts\\KoPubBatangMedium.ttf",
+    boldPath: "C:\\Windows\\Fonts\\KoPubBatangBold.ttf"
+  }
+];
+
 export const pdfStyleLabels: Record<PdfStyleTarget, string> = {
   title: "제목",
   date: "날짜",
@@ -54,7 +87,11 @@ export const defaultSettings: AppSettings = {
   pdfPageCount: 0,
   pdfPageOrientation: "portrait",
   pdfTextColumnCount: 2,
-  pdfCoverImagePath: "assets\\heart-food-journal-cover.jpeg",
+  pdfPortraitCoverImagePath: "assets\\Cover-Long3.jpeg",
+  pdfLandscapeCoverImagePath: "assets\\Cover-Wide2.png",
+  pdfCoverImagePath: "assets\\Cover-Long3.jpeg",
+  pdfCornerPatternPath: "assets\\korean-corner-pattern-1.jpeg",
+  pdfFonts: defaultPdfFonts,
   pdfStyles: {
     title: { ...defaultPdfTextStyle, fontSize: 16, color: "#111111", bold: true, lineHeight: 1.18 },
     date: { ...defaultPdfTextStyle, fontSize: 8, color: "#666666", lineHeight: 1.05 },

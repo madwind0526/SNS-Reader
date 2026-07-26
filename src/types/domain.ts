@@ -22,6 +22,14 @@ export interface PdfTextStyle {
   lineHeight: number;
 }
 
+export interface PdfFontConfig {
+  id: string;
+  label: string;
+  fontFamily: string;
+  regularPath: string;
+  boldPath?: string;
+}
+
 export type StorageLayout = "platform-month" | "month-platform";
 
 export type ThemeMode = "light" | "dark";
@@ -82,7 +90,11 @@ export interface AppSettings {
   pdfPageCount: number;
   pdfPageOrientation: PdfPageOrientation;
   pdfTextColumnCount: PdfTextColumnCount;
+  pdfPortraitCoverImagePath: string;
+  pdfLandscapeCoverImagePath: string;
   pdfCoverImagePath: string;
+  pdfCornerPatternPath: string;
+  pdfFonts: PdfFontConfig[];
   pdfStyles: Record<PdfStyleTarget, PdfTextStyle>;
   imageLayout: ImageLayout;
   selectedLlmProvider: LlmProviderId;

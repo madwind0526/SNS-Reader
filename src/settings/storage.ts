@@ -1,5 +1,5 @@
-import { defaultSettings, SETTINGS_STORAGE_KEY } from "./defaults";
-import type { AppSettings, PdfStyleTarget, PdfTextStyle } from "../types/domain";
+import { defaultPdfFonts, defaultSettings, SETTINGS_STORAGE_KEY } from "./defaults";
+import type { AppSettings, PdfFontConfig, PdfStyleTarget, PdfTextStyle } from "../types/domain";
 
 function persistSettingsFile(settings: AppSettings) {
   const fileSave =
@@ -30,6 +30,50 @@ const legacyPdfStyles: Partial<Record<PdfStyleTarget, Partial<PdfTextStyle>>> = 
   tags: { fontSize: 9, lineHeight: 1.25 }
 };
 
+function normalizePdfFontFamily(fontFamily: string | undefined) {
+  if (fontFamily === "Nanum Gothic") {
+    return "NanumGothic";
+  }
+
+  return fontFamily || defaultSettings.pdfStyles.body.fontFamily;
+}
+
+function normalizePdfCoverPath(pathValue: string | undefined, fallback: string) {
+  const value = String(pathValue || "").trim();
+
+  return value.toLowerCase().includes("heart-food-journal-cover.jpeg") ? fallback : value || fallback;
+}
+
+function normalizePdfFonts(parsedFonts: PdfFontConfig[] | undefined) {
+  const fonts = [...defaultPdfFonts];
+
+  (Array.isArray(parsedFonts) ? parsedFonts : []).forEach((font) => {
+    const label = String(font.label || "").trim();
+    const fontFamily = String(font.fontFamily || label).trim();
+
+    if (!label || !fontFamily) {
+      return;
+    }
+
+    const normalizedFont: PdfFontConfig = {
+      id: String(font.id || `custom-${fontFamily}`).trim(),
+      label,
+      fontFamily: normalizePdfFontFamily(fontFamily),
+      regularPath: String(font.regularPath || "").trim(),
+      boldPath: String(font.boldPath || "").trim() || undefined
+    };
+    const existingIndex = fonts.findIndex((item) => item.fontFamily.toLowerCase() === normalizedFont.fontFamily.toLowerCase());
+
+    if (existingIndex >= 0) {
+      fonts[existingIndex] = { ...fonts[existingIndex], ...normalizedFont };
+    } else {
+      fonts.push(normalizedFont);
+    }
+  });
+
+  return fonts;
+}
+
 function normalizePdfStyleTarget(target: PdfStyleTarget, parsedStyle: Partial<PdfTextStyle> | undefined) {
   if (!parsedStyle) {
     return defaultSettings.pdfStyles[target];
@@ -44,7 +88,11 @@ function normalizePdfStyleTarget(target: PdfStyleTarget, parsedStyle: Partial<Pd
     return defaultSettings.pdfStyles[target];
   }
 
-  return { ...defaultSettings.pdfStyles[target], ...parsedStyle };
+  return {
+    ...defaultSettings.pdfStyles[target],
+    ...parsedStyle,
+    fontFamily: normalizePdfFontFamily(parsedStyle.fontFamily)
+  };
 }
 
 function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
@@ -71,7 +119,10 @@ function normalizeSettings(parsed: Partial<AppSettings>): AppSettings {
         : parsed.pdfTextColumnCount === 3 && parsed.pdfPageOrientation !== "landscape"
           ? 2
           : parsed.pdfTextColumnCount ?? defaultSettings.pdfTextColumnCount,
-    pdfCoverImagePath: parsed.pdfCoverImagePath ?? defaultSettings.pdfCoverImagePath,
+    pdfPortraitCoverImagePath: normalizePdfCoverPath(parsed.pdfPortraitCoverImagePath ?? parsed.pdfCoverImagePath, defaultSettings.pdfPortraitCoverImagePath),
+    pdfLandscapeCoverImagePath: normalizePdfCoverPath(parsed.pdfLandscapeCoverImagePath ?? parsed.pdfCoverImagePath, defaultSettings.pdfLandscapeCoverImagePath),
+    pdfCoverImagePath: normalizePdfCoverPath(parsed.pdfCoverImagePath, defaultSettings.pdfCoverImagePath),
+    pdfFonts: normalizePdfFonts(parsed.pdfFonts),
     pdfStyles: {
       title: normalizePdfStyleTarget("title", parsedPdfStyles.title),
       date: normalizePdfStyleTarget("date", parsedPdfStyles.date),
