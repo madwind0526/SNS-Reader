@@ -77,3 +77,8 @@ Reusable implementation patterns for this project will be accumulated here.
 - Mesh View pan and zoom should update the SVG `viewBox`, not individual node positions. Wheel zoom can anchor to the cursor by converting the cursor point into the current viewBox coordinate before recalculating the next viewBox.
 - LLM enrichment should support `--year`, `--date-from`, `--date-to`, and `--limit` so large local-model runs can be resumed and diagnosed by batch.
 - Word Cloud layout should measure each label before placement, cap long labels relative to the fixed panel width, place labels by spiral search, and skip only labels that cannot be placed inside bounds.
+
+# Wave 15 Patterns
+
+- PDF overview Summary should build a period-level narrative instead of concatenating repeated per-post summaries; low-information repeated summaries need filtering and replacement with a concise archive-level sentence.
+- Naver Blog image metadata can point to low-resolution `postfiles.pstatic.net` URLs by default; appending `?type=w966` or another Naver image size parameter can recover a higher-resolution original for PDF rendering when `meta.json` exposes the source URL.

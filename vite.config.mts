@@ -12,6 +12,7 @@ import react from "@vitejs/plugin-react";
 
 const require = createRequire(import.meta.url);
 const PDFDocument = require("pdfkit");
+const fontkit = require("fontkit");
 
 function readRequestBody(request: import("node:http").IncomingMessage) {
   return new Promise<string>((resolve, reject) => {
@@ -199,6 +200,12 @@ function scriptArgsForArchiveImport(platform: string, zipPath: string) {
         script: path.resolve(process.cwd(), "tools/import-youtube-takeout.mjs"),
         args: ["--zip", zipPath],
         label: "YouTube"
+      };
+    case "x":
+      return {
+        script: path.resolve(process.cwd(), "tools/import-x-archive.mjs"),
+        args: ["--zip", zipPath],
+        label: "X"
       };
     default:
       return null;
@@ -827,6 +834,7 @@ function parsePdfYearRanges(value: string): PdfBookRange[] {
 function estimatePostPageCost(post: Record<string, any>, settings: Record<string, any>) {
   const textColumnCount = getPdfTextColumnCount(settings);
   const isLandscape = settings.pdfPageOrientation === "landscape";
+  const imageLayout = String(settings.imageLayout || "collage");
   const bodyText = [
     post.title,
     post.body,
@@ -839,7 +847,23 @@ function estimatePostPageCost(post: Record<string, any>, settings: Record<string
   const charsPerPage = isLandscape ? textColumnCount * 1250 : textColumnCount * 850;
   const textPages = Math.max(1, Math.ceil(bodyText.length / Math.max(450, charsPerPage)));
   const imageCount = settings.pdfFields?.includes("images") ? pdfImagePathsFromPost(post).length : 0;
-  const imagePages = Math.ceil(imageCount / (isLandscape ? 8 : 6));
+  const imageOnly = isImageOnlyPdfPost(post);
+
+  if (imageOnly && imageCount > 0) {
+    return 1;
+  }
+
+  if (imageCount === 0) {
+    return textPages;
+  }
+
+  if (imageCount < 4) {
+    return textPages + (textPages > 1 ? 1 : 0);
+  }
+
+  const collagePage = imageLayout === "collage" || imageLayout === "collage-individual" ? 1 : 0;
+  const individualPages = imageLayout === "individual" || imageLayout === "collage-individual" ? Math.ceil(imageCount / (isLandscape ? 8 : 6)) : 0;
+  const imagePages = Math.max(1, collagePage + individualPages);
 
   return textPages + imagePages;
 }
@@ -1139,10 +1163,8 @@ function isImageOnlyPdfPost(post: Record<string, any>) {
 
 function defaultPdfSampleImagePaths() {
   return [
-    path.join(process.cwd(), "assets", "heart-food-journal-cover.jpeg"),
-    path.join(process.cwd(), "assets", "korean-corner-pattern-1.jpeg"),
-    path.join(process.cwd(), "assets", "korean-corner-pattern-2.jpeg"),
-    path.join(process.cwd(), "assets", "korean-corner-pattern-3.jpeg"),
+    path.join(process.cwd(), "assets", "Cover-Long3.jpeg"),
+    path.join(process.cwd(), "assets", "Cover-Wide2.png"),
   ].filter(isUsablePdfImagePath);
 }
 
@@ -1158,6 +1180,35 @@ function seededImageOrder(paths: string[], salt: string) {
     return leftKey.localeCompare(rightKey);
   });
 }
+
+function randomImageOrder(paths: string[]) {
+  const ordered = [...paths];
+
+  for (let index = ordered.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [ordered[index], ordered[swapIndex]] = [ordered[swapIndex], ordered[index]];
+  }
+
+  return ordered;
+}
+
+// Picks up to `targetCount` real post images at random. Never pads short of that
+// count by repeating images - the mosaic layout adapts to however many images are
+// actually available. Only falls back to a single branded placeholder when the
+// book has no usable images at all.
+function randomPdfCollageImages(paths: string[], targetCount: number) {
+  const sourceImages = uniqueStrings(paths).filter(isUsablePdfImagePath);
+
+  if (sourceImages.length > 0) {
+    return randomImageOrder(sourceImages).slice(0, Math.max(1, targetCount));
+  }
+
+  const fallbackImages = defaultPdfSampleImagePaths();
+
+  return fallbackImages.length ? [randomImageOrder(fallbackImages)[0]] : [];
+}
+
+const PDF_OVERVIEW_COLLAGE_IMAGE_COUNT = 20;
 
 function cleanPdfOverviewSummaryLine(value: string) {
   return String(value || "")
@@ -1280,6 +1331,70 @@ function buildPdfOverviewSummaryLines(posts: Array<Record<string, any>>, tagCoun
   }
 
   return lines.slice(0, 8);
+}
+
+const WINDOWS_FONTS_DIR = path.join(process.env.WINDIR || "C:\\Windows", "Fonts");
+
+let cachedSystemFonts: Array<{ family: string; regularPath: string; boldPath: string }> | null = null;
+
+// Scans the OS font directory once and groups files by their real font-table
+// family name (via fontkit), not the filename - Windows font filenames are
+// inconsistent (e.g. "AGENCYB.TTF" is "Agency FB Bold"). Font collections
+// (.ttc) are skipped since PDFKit needs a plain single-family file to embed.
+async function scanSystemFonts() {
+  if (cachedSystemFonts) {
+    return cachedSystemFonts;
+  }
+
+  const fileNames = await readdir(WINDOWS_FONTS_DIR).catch(() => [] as string[]);
+  const families = new Map<string, { family: string; regularPath: string; boldPath: string }>();
+
+  for (const fileName of fileNames) {
+    if (!/\.(ttf|otf)$/i.test(fileName)) {
+      continue;
+    }
+
+    const fullPath = path.join(WINDOWS_FONTS_DIR, fileName);
+    let parsed: any;
+
+    try {
+      parsed = fontkit.openSync(fullPath);
+    } catch {
+      continue;
+    }
+
+    const family = String(parsed?.familyName || "").trim();
+
+    if (!family || parsed?.fonts) {
+      continue;
+    }
+
+    const subfamily = String(parsed?.subfamilyName || "").toLowerCase();
+    const isItalic = subfamily.includes("italic") || subfamily.includes("oblique");
+    const isBold = subfamily.includes("bold");
+    const key = family.toLowerCase();
+    const entry = families.get(key) || { family, regularPath: "", boldPath: "" };
+
+    if (isBold && !isItalic && !entry.boldPath) {
+      entry.boldPath = fullPath;
+    } else if (!isBold && !isItalic && !entry.regularPath) {
+      entry.regularPath = fullPath;
+    } else if (!entry.regularPath && !entry.boldPath) {
+      entry.regularPath = fullPath;
+    }
+
+    families.set(key, entry);
+  }
+
+  cachedSystemFonts = [...families.values()]
+    .map((entry) => ({
+      family: entry.family,
+      regularPath: entry.regularPath || entry.boldPath,
+      boldPath: entry.boldPath,
+    }))
+    .sort((left, right) => left.family.localeCompare(right.family));
+
+  return cachedSystemFonts;
 }
 
 function resolvePdfFont(style: Record<string, any>) {
@@ -1699,7 +1814,7 @@ function drawContentLine(doc: any, line: { text: string; target: string; heading
 }
 
 function drawContentLinesChunk(doc: any, lines: Array<{ text: string; target: string; height: number; heading?: boolean }>, styles: Record<string, any>, x: number, y: number, width: number) {
-  const paddingX = 12;
+  const paddingX = 8;
   const paddingY = 10;
   const chunkHeight = Math.max(34, measureContentLines(lines) + paddingY * 2);
 
@@ -1733,13 +1848,18 @@ function drawTextColumns(
   let cursorY = startY;
   let chunkStartY = startY;
   let chunk: typeof lines = [];
+  // `drawContentLinesChunk` draws a padded panel that reaches further down than
+  // the raw sum of line heights (it adds top/bottom padding), so track its real
+  // returned bottom edge instead of trusting `cursorY` for "where did the drawn
+  // content actually end" - otherwise anything placed below it would overlap.
+  let lastDrawnBottom = startY;
 
   const flushChunk = () => {
     if (!chunk.length) {
       return;
     }
 
-    drawContentLinesChunk(doc, chunk, styles, columns[columnIndex], chunkStartY, columnWidth);
+    lastDrawnBottom = drawContentLinesChunk(doc, chunk, styles, columns[columnIndex], chunkStartY, columnWidth);
     chunk = [];
   };
 
@@ -1769,7 +1889,7 @@ function drawTextColumns(
 
   flushChunk();
 
-  return { pageIndex, columnIndex, y: cursorY, columnWidth, gap };
+  return { pageIndex, columnIndex, y: lastDrawnBottom, columnWidth, gap };
 }
 
 function drawImageCell(doc: any, imagePath: string, x: number, y: number, width: number, height: number) {
@@ -1789,23 +1909,145 @@ function drawImageCell(doc: any, imagePath: string, x: number, y: number, width:
   }
 }
 
+function pdfImageAspectRatio(doc: any, imagePath: string) {
+  try {
+    const image = doc.openImage(imagePath);
+    const width = Number(image?.width) || 0;
+    const height = Number(image?.height) || 0;
+
+    if (width > 0 && height > 0) {
+      return width / height;
+    }
+  } catch {
+    // Fall through to the default ratio below.
+  }
+
+  return 1.33;
+}
+
 function drawCollageImage(doc: any, imagePath: string, x: number, y: number, width: number, height: number) {
   doc.save();
-  doc.rect(x, y, width, height).clip();
+  doc.rect(x, y, width, height).fill("#f4f4f1");
 
   try {
-    doc.image(imagePath, x, y, { cover: [width, height], align: "center", valign: "center" });
+    doc.image(imagePath, x, y, { width, height });
   } catch {
     const sampleImage = defaultPdfSampleImagePaths()[0];
 
     if (sampleImage) {
-      doc.image(sampleImage, x, y, { cover: [width, height], align: "center", valign: "center" });
+      doc.image(sampleImage, x, y, { width, height });
     } else {
       doc.rect(x, y, width, height).fill("#b9cd92");
     }
   }
 
   doc.restore();
+}
+
+function packJustifiedMosaicRows(ratios: number[], width: number, targetRowHeight: number, gap: number) {
+  const rows: Array<{ height: number; count: number }> = [];
+  let index = 0;
+
+  while (index < ratios.length) {
+    let rowCount = 0;
+    let rowRatioSum = 0;
+    let rowWidthAtTarget = 0;
+
+    while (index + rowCount < ratios.length) {
+      const ratio = ratios[index + rowCount];
+      const projectedWidth = rowWidthAtTarget + ratio * targetRowHeight + (rowCount > 0 ? gap : 0);
+
+      if (rowCount > 0 && projectedWidth > width) {
+        break;
+      }
+
+      rowWidthAtTarget = projectedWidth;
+      rowRatioSum += ratio;
+      rowCount += 1;
+    }
+
+    const rawRowHeight = (width - gap * (rowCount - 1)) / Math.max(0.01, rowRatioSum);
+    const rowHeight = Math.max(18, Math.min(rawRowHeight, targetRowHeight * 1.8));
+
+    rows.push({ height: rowHeight, count: rowCount });
+    index += rowCount;
+  }
+
+  return rows;
+}
+
+function totalJustifiedMosaicHeight(rows: Array<{ height: number }>, gap: number) {
+  if (rows.length === 0) {
+    return 0;
+  }
+
+  return rows.reduce((sum, row) => sum + row.height, 0) + gap * (rows.length - 1);
+}
+
+// Lays out every image in width-justified rows so each one keeps its natural
+// aspect ratio (never cropped, only scaled), then uniformly scales the whole
+// mosaic so it fills the given box exactly on a single page/area - no matter
+// how many images there are, everything always fits on one page.
+function drawMosaicImageGrid(doc: any, imagePaths: string[], x: number, y: number, width: number, height: number, gap = 4) {
+  const selectedImages = imagePaths.length ? imagePaths : defaultPdfSampleImagePaths();
+
+  if (selectedImages.length === 0) {
+    doc.rect(x, y, width, height).fill(pdfBookColors.collageFallbackA);
+    return;
+  }
+
+  const ratios = selectedImages.map((imagePath) => pdfImageAspectRatio(doc, imagePath));
+  let targetRowHeight = Math.max(24, Math.sqrt((width * height) / selectedImages.length));
+  let rows = packJustifiedMosaicRows(ratios, width, targetRowHeight, gap);
+
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    const naturalHeight = totalJustifiedMosaicHeight(rows, gap);
+
+    if (naturalHeight <= 0) {
+      break;
+    }
+
+    const adjustRatio = height / naturalHeight;
+
+    if (adjustRatio > 0.96 && adjustRatio < 1.04) {
+      break;
+    }
+
+    targetRowHeight = Math.max(6, targetRowHeight * adjustRatio);
+    rows = packJustifiedMosaicRows(ratios, width, targetRowHeight, gap);
+  }
+
+  const naturalHeight = totalJustifiedMosaicHeight(rows, gap);
+  // Each row is already justified to exactly `width`, so scaling above 1 would push
+  // every row wider than the box (bleeding into whatever sits beside/below it).
+  // Only ever shrink to fit the height; if the mosaic is naturally shorter than the
+  // box (too few images to need the full height), keep it at natural size and
+  // center it instead of stretching it past the box.
+  const scale = naturalHeight > 0 ? Math.min(1, height / naturalHeight) : 1;
+  const scaledWidth = width * scale;
+  const scaledGap = gap * scale;
+  let cursorY = y + Math.max(0, (height - naturalHeight * scale) / 2);
+  let imageIndex = 0;
+
+  for (const row of rows) {
+    const rowHeight = Math.max(4, row.height * scale);
+    const rowStartX = x + (width - scaledWidth) / 2;
+    let cursorX = rowStartX;
+
+    // Every cell keeps its own natural width (ratio * rowHeight) - never forced
+    // to stretch and fill the row. A row-height cap (for very tall/narrow
+    // images) or a short trailing row can leave real leftover width; that's
+    // just left blank rather than distorting a real photo or adding filler.
+    for (let cell = 0; cell < row.count; cell += 1) {
+      const cellWidth = Math.max(4, ratios[imageIndex] * rowHeight);
+
+      drawCollageImage(doc, selectedImages[imageIndex], cursorX, cursorY, cellWidth, rowHeight);
+      cursorX += cellWidth + scaledGap;
+      imageIndex += 1;
+    }
+
+    cursorY += rowHeight + scaledGap;
+  }
 }
 
 function drawImageCollagePage(doc: any, imagePaths: string[], title = "") {
@@ -1816,46 +2058,9 @@ function drawImageCollagePage(doc: any, imagePaths: string[], title = "") {
   const y = outer;
   const width = pageWidth - outer * 2;
   const height = pageHeight - outer * 2;
-  const cellGap = 5;
-  const selectedImages = imagePaths.length ? imagePaths : defaultPdfSampleImagePaths();
-  const cells = [
-    [0, 0, 0.24, 0.28],
-    [0, 0.28, 0.24, 0.5],
-    [0, 0.5, 0.24, 0.72],
-    [0, 0.72, 0.24, 0.86],
-    [0, 0.86, 0.24, 1],
-    [0.24, 0, 0.48, 0.1],
-    [0.24, 0.1, 0.48, 0.32],
-    [0.24, 0.32, 0.48, 0.58],
-    [0.24, 0.58, 0.48, 0.78],
-    [0.24, 0.78, 0.48, 1],
-    [0.48, 0, 0.72, 0.34],
-    [0.48, 0.34, 0.72, 0.46],
-    [0.48, 0.46, 0.72, 0.66],
-    [0.48, 0.66, 0.72, 1],
-    [0.72, 0, 1, 0.24],
-    [0.72, 0.24, 1, 0.34],
-    [0.72, 0.34, 1, 0.58],
-    [0.72, 0.58, 1, 0.74],
-    [0.72, 0.74, 1, 0.86],
-    [0.72, 0.86, 1, 1],
-  ];
 
   doc.rect(0, 0, pageWidth, pageHeight).fill(pdfBookColors.coverBackground);
-
-  cells.forEach(([left, top, right, bottom], index) => {
-    const imagePath = selectedImages[index % Math.max(1, selectedImages.length)];
-    const cellX = x + width * left + cellGap / 2;
-    const cellY = y + height * top + cellGap / 2;
-    const cellWidth = Math.max(10, width * (right - left) - cellGap);
-    const cellHeight = Math.max(10, height * (bottom - top) - cellGap);
-
-    if (imagePath) {
-      drawCollageImage(doc, imagePath, cellX, cellY, cellWidth, cellHeight);
-    } else {
-      doc.rect(cellX, cellY, cellWidth, cellHeight).fill(index % 2 ? pdfBookColors.collageFallbackA : pdfBookColors.collageFallbackB);
-    }
-  });
+  drawMosaicImageGrid(doc, imagePaths, x, y, width, height, 5);
 
   if (title) {
     doc.save();
@@ -1868,78 +2073,51 @@ function drawImageCollagePage(doc: any, imagePaths: string[], title = "") {
       .text(title, x + 16, pageHeight - outer - 28, { lineBreak: false, width: width - 32 });
     doc.restore();
   }
+
+  return 1;
+}
+
+function drawBoxedMosaic(doc: any, imagePaths: string[], x: number, y: number, width: number, height: number) {
+  doc.save();
+  doc.roundedRect(x, y, width, height, 4).fill("#f4f4f1");
+  doc.strokeColor("#ddddda").lineWidth(0.55).roundedRect(x, y, width, height, 4).stroke();
+  doc.restore();
+
+  drawMosaicImageGrid(doc, imagePaths, x + 6, y + 6, width - 12, height - 12, 4);
 }
 
 function drawPostImageCollage(doc: any, imagePaths: string[], x: number, y: number, width: number, height: number) {
-  const visibleImages = imagePaths.slice(0, 9);
-  const columns = visibleImages.length <= 2 ? visibleImages.length : visibleImages.length <= 4 ? 2 : 3;
-  const rows = Math.ceil(visibleImages.length / Math.max(1, columns));
-  const gap = 5;
-  const cellWidth = (width - gap * (columns - 1)) / Math.max(1, columns);
-  const cellHeight = (height - gap * (rows - 1)) / Math.max(1, rows);
-
-  doc.save();
-  doc.roundedRect(x, y, width, height, 4).fill("#f4f4f1");
-  doc.strokeColor("#ddddda").lineWidth(0.55).roundedRect(x, y, width, height, 4).stroke();
-  doc.restore();
-
-  visibleImages.forEach((imagePath, index) => {
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-
-    try {
-      doc.image(imagePath, x + column * (cellWidth + gap) + 6, y + row * (cellHeight + gap) + 6, {
-        fit: [cellWidth - 12, cellHeight - 12],
-        align: "center",
-        valign: "center",
-      });
-    } catch {
-      const sampleImage = defaultPdfSampleImagePaths()[0];
-
-      if (sampleImage) {
-        doc.image(sampleImage, x + column * (cellWidth + gap) + 6, y + row * (cellHeight + gap) + 6, {
-          fit: [cellWidth - 12, cellHeight - 12],
-          align: "center",
-          valign: "center",
-        });
-      }
-    }
-  });
-
-  if (imagePaths.length > visibleImages.length) {
-    doc
-      .font(resolvePdfFont({ bold: true, fontFamily: "Malgun Gothic" }))
-      .fontSize(8)
-      .fillColor("#1f6f68")
-      .text(`+${imagePaths.length - visibleImages.length} images`, x + 8, y + height - 18, { align: "right", width: width - 16 });
-  }
+  drawBoxedMosaic(doc, imagePaths, x, y, width, height);
 }
 
-function drawFullPagePostImages(doc: any, imagePaths: string[], x: number, y: number, width: number, height: number) {
-  if (imagePaths.length <= 1) {
-    drawImageCell(doc, imagePaths[0], x, y, width, height);
+function drawFullPagePostImages(doc: any, imagePaths: string[], x: number, y: number, width: number, height: number, imageLayout = "collage") {
+  if (imagePaths.length === 0) {
     return;
   }
 
-  const gap = 6;
-  const columns = Math.max(1, Math.ceil(Math.sqrt(imagePaths.length * (width / Math.max(1, height)))));
-  const rows = Math.max(1, Math.ceil(imagePaths.length / columns));
-  const cellWidth = (width - gap * (columns - 1)) / columns;
-  const cellHeight = (height - gap * (rows - 1)) / rows;
+  const shouldDrawCollage = imageLayout === "collage" || (imageLayout === "collage-individual" && imagePaths.length >= 4);
+  const shouldDrawIndividuals = imageLayout === "individual" || imageLayout === "collage-individual";
 
-  doc.save();
-  doc.roundedRect(x, y, width, height, 4).fill("#f4f4f1");
-  doc.strokeColor("#ddddda").lineWidth(0.55).roundedRect(x, y, width, height, 4).stroke();
-  doc.restore();
+  if (shouldDrawCollage) {
+    drawBoxedMosaic(doc, imagePaths, x, y, width, height);
+  }
 
-  imagePaths.forEach((imagePath, index) => {
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    const cellX = x + column * (cellWidth + gap);
-    const cellY = y + row * (cellHeight + gap);
-
-    drawCollageImage(doc, imagePath, cellX, cellY, cellWidth, cellHeight);
-  });
+  if (shouldDrawIndividuals) {
+    if (shouldDrawCollage) {
+      addPdfPage(doc);
+      drawPageDecoration(doc, { patterns: true });
+      drawImagesInColumnThenPages(
+        doc,
+        imagePaths,
+        doc.page.margins.left,
+        doc.page.margins.top + 10,
+        doc.page.width - doc.page.margins.left - doc.page.margins.right,
+        false
+      );
+    } else {
+      drawImagesInColumnThenPages(doc, imagePaths, x, y, width, true);
+    }
+  }
 }
 
 function drawImageOnlyPdfPostPage(doc: any, post: Record<string, any>, settings: Record<string, any>, styles: Record<string, any>) {
@@ -1983,7 +2161,15 @@ function drawImageOnlyPdfPostPage(doc: any, post: Record<string, any>, settings:
   });
 
   const imageY = titleY + Math.max(titleLineHeight, titleLines.length * titleLineHeight) + 18;
-  drawFullPagePostImages(doc, imagePaths, doc.page.margins.left, imageY, pageWidth, Math.max(120, bottom - imageY));
+  drawFullPagePostImages(
+    doc,
+    imagePaths,
+    doc.page.margins.left,
+    imageY,
+    pageWidth,
+    Math.max(120, bottom - imageY),
+    String(settings.imageLayout || "collage")
+  );
 
   return true;
 }
@@ -2045,47 +2231,70 @@ function drawPostContentColumns(doc: any, post: Record<string, any>, settings: R
   const columns = Array.from({ length: textColumnCount }, (_item, index) => doc.page.margins.left + index * (columnWidth + gap));
   const startY = doc.y;
   const bottom = pdfContentBottom(doc);
-  const innerWidth = columnWidth - 24;
+  const innerWidth = columnWidth - 16;
   const lines = buildPdfContentLines(doc, post, settings, styles, innerWidth);
   const imagePaths = pdfImagePathsFromPost(post);
   const imageLayout = String(settings.imageLayout || "collage");
+  const shouldDrawCollage = imagePaths.length > 0 && (imageLayout === "collage" || (imageLayout === "collage-individual" && imagePaths.length >= 4));
+  const shouldDrawIndividuals = imagePaths.length > 0 && (imageLayout === "individual" || imageLayout === "collage-individual");
   const leftCapacity = Math.max(0, bottom - startY - 20);
   const textFitsLeft = measureContentLines(lines) <= leftCapacity;
 
-  if (textColumnCount === 2 && imagePaths.length && textFitsLeft) {
+  // Individual images always live inside whichever text column has room; collage
+  // images never share a page with text at all - they always get their own new
+  // page, built with the exact same mosaic logic as the front/back overview
+  // collage. So collage skips the "text | image column" layout entirely, even
+  // when the text is short enough that it would otherwise qualify.
+  if (!shouldDrawCollage && shouldDrawIndividuals && textColumnCount === 2 && textFitsLeft) {
     drawContentLinesChunk(doc, lines, styles, columns[0], startY, columnWidth);
-
-    if (imageLayout === "collage" || imageLayout === "collage-individual") {
-      drawPostImageCollage(doc, imagePaths, columns[1], startY, columnWidth, Math.max(170, bottom - startY));
-
-      if (imageLayout === "collage-individual") {
-        drawImagesInColumnThenPages(doc, imagePaths, columns[1], startY, columnWidth, false);
-      }
-    } else {
-      drawImagesInColumnThenPages(doc, imagePaths, columns[1], startY, columnWidth, true);
-    }
+    drawImagesInColumnThenPages(doc, imagePaths, columns[1], startY, columnWidth, true);
     return;
   }
 
-  drawTextColumns(doc, lines, styles, startY, textColumnCount);
+  const textResult = drawTextColumns(doc, lines, styles, startY, textColumnCount);
 
-  if (imagePaths.length) {
-    if (imageLayout === "collage" || imageLayout === "collage-individual") {
-      addPdfPage(doc);
-      drawPageDecoration(doc, { patterns: true });
-      drawPostImageCollage(
-        doc,
-        imagePaths,
-        doc.page.margins.left,
-        doc.page.margins.top + 10,
-        pageWidth,
-        pdfContentBottom(doc) - doc.page.margins.top - 10
-      );
-    }
+  if (!imagePaths.length) {
+    return;
+  }
 
-    if (imageLayout === "individual" || imageLayout === "collage-individual") {
+  if (shouldDrawCollage) {
+    addPdfPage(doc);
+    drawPageDecoration(doc, { patterns: true });
+    drawPostImageCollage(
+      doc,
+      imagePaths,
+      doc.page.margins.left,
+      doc.page.margins.top + 10,
+      pageWidth,
+      pdfContentBottom(doc) - doc.page.margins.top - 10
+    );
+
+    if (shouldDrawIndividuals) {
+      // `firstPageSingleColumn: false` already starts on a fresh page internally,
+      // so no extra addPdfPage() here - that would leave one page blank.
       drawImagesInColumnThenPages(doc, imagePaths, doc.page.margins.left, doc.page.margins.top + 10, pageWidth, false);
     }
+
+    return;
+  }
+
+  // Individual images that didn't fit beside the text (body ran past one
+  // column's capacity): the text may have flowed into a second column that
+  // ends well before the page bottom (e.g. a short Comments/Summary/TAG
+  // block next to a long body) - or even onto a later page, if the body was
+  // long enough to need one. Either way, place images in that same column's
+  // leftover space on whichever page the text actually ended on, at that
+  // column's width - never assume the full page width is free (the *other*
+  // column may reach much further down) and never force a fresh page just
+  // because earlier pages were needed for the text itself.
+  const lastColumnX = columns[textResult.columnIndex];
+  const inlineImagesTop = textResult.y + 14;
+  const inlineImagesAvailable = bottom - inlineImagesTop;
+
+  if (inlineImagesAvailable >= 150) {
+    drawImagesInColumnThenPages(doc, imagePaths, lastColumnX, inlineImagesTop, textResult.columnWidth, true);
+  } else {
+    drawImagesInColumnThenPages(doc, imagePaths, doc.page.margins.left, doc.page.margins.top + 10, pageWidth, false);
   }
 }
 
@@ -2586,12 +2795,12 @@ function drawPostImages(doc: any, post: Record<string, any>, settings: Record<st
 }
 
 const compactPdfStyles: Record<string, Record<string, unknown>> = {
-  title: { fontFamily: "Malgun Gothic", fontSize: 16, color: "#111111", bold: true, italic: false, underline: false, lineHeight: 1.18 },
-  date: { fontFamily: "Malgun Gothic", fontSize: 8, color: "#666666", bold: false, italic: false, underline: false, lineHeight: 1.05 },
-  body: { fontFamily: "Malgun Gothic", fontSize: 9.5, color: "#222222", bold: false, italic: false, underline: false, lineHeight: 1.18 },
-  comments: { fontFamily: "Malgun Gothic", fontSize: 8.5, color: "#555555", bold: false, italic: false, underline: false, lineHeight: 1.15 },
-  summary: { fontFamily: "Malgun Gothic", fontSize: 8.8, color: "#333333", bold: false, italic: true, underline: false, lineHeight: 1.16 },
-  tags: { fontFamily: "Malgun Gothic", fontSize: 8.5, color: "#1f6f68", bold: true, italic: false, underline: false, lineHeight: 1.12 },
+  title: { fontFamily: "Malgun Gothic", fontSize: 16, color: "#111111", colorDark: "#f5f5f0", bold: true, italic: false, underline: false, lineHeight: 1.18 },
+  date: { fontFamily: "Malgun Gothic", fontSize: 8, color: "#666666", colorDark: "#b7bdb9", bold: false, italic: false, underline: false, lineHeight: 1.05 },
+  body: { fontFamily: "Malgun Gothic", fontSize: 9.5, color: "#222222", colorDark: "#e8e6df", bold: false, italic: false, underline: false, lineHeight: 1.18 },
+  comments: { fontFamily: "Malgun Gothic", fontSize: 8.5, color: "#555555", colorDark: "#c7ccc8", bold: false, italic: false, underline: false, lineHeight: 1.15 },
+  summary: { fontFamily: "Malgun Gothic", fontSize: 8.8, color: "#333333", colorDark: "#d8d5cb", bold: false, italic: true, underline: false, lineHeight: 1.16 },
+  tags: { fontFamily: "Malgun Gothic", fontSize: 8.5, color: "#1f6f68", colorDark: "#8ed8c8", bold: true, italic: false, underline: false, lineHeight: 1.12 },
 };
 
 const pdfBookColors = {
@@ -2650,6 +2859,10 @@ function normalizePdfStylesForBook(savedStyles: Record<string, any> = {}, reques
       const fontFamily = normalizePdfFontFamily(String(style.fontFamily || ""));
       const font = fontCatalog.get(fontFamily.toLowerCase());
 
+      // `style.color` (light) is what actually gets printed - the PDF page
+      // background is always the same light cream regardless of the app's own
+      // theme. `style.colorDark` only exists for the in-app style preview
+      // (editing comfort while the app itself is in dark mode).
       return [
         target,
         {
@@ -2753,9 +2966,8 @@ async function writePdfBook(
     .sort((left, right) => right.score - left.score)
     .slice(0, 5);
   const allImagePaths = uniqueStrings(posts.flatMap(postImagePaths));
-  const favoriteImagePaths = uniqueStrings(topPosts.flatMap(({ post }) => postImagePaths(post)));
-  const frontCollageImages = uniqueStrings([...favoriteImagePaths, ...seededImageOrder(allImagePaths, "front-collage")]).slice(0, 20);
-  const backCollageImages = seededImageOrder(allImagePaths, "back-collage").slice(0, 20);
+  const frontCollageImages = randomPdfCollageImages(allImagePaths, PDF_OVERVIEW_COLLAGE_IMAGE_COUNT);
+  const backCollageImages = randomPdfCollageImages(allImagePaths, PDF_OVERVIEW_COLLAGE_IMAGE_COUNT);
   const monthCounts = countBy(posts, monthKeyFromPost);
 
   const coverStart = (range.from || "").replaceAll("-", "/");
@@ -2809,7 +3021,7 @@ async function writePdfBook(
   doc.restore();
 
   addPdfPage(doc);
-  drawImageCollagePage(doc, frontCollageImages);
+  const frontCollagePagesUsed = drawImageCollagePage(doc, frontCollageImages);
 
   addPdfPage(doc);
   drawPageDecoration(doc);
@@ -2951,14 +3163,19 @@ async function writePdfBook(
   }
 
   addPdfPage(doc);
-  drawImageCollagePage(doc, backCollageImages);
+  const backCollagePagesUsed = drawImageCollagePage(doc, backCollageImages);
 
   const rangeInfo = doc.bufferedPageRange();
-  const frontCollagePageIndex = rangeInfo.start + 1;
-  const backCollagePageIndex = rangeInfo.start + rangeInfo.count - 1;
+  const frontCollageStart = rangeInfo.start + 1;
+  const frontCollageEnd = frontCollageStart + frontCollagePagesUsed - 1;
+  const backCollageEnd = rangeInfo.start + rangeInfo.count - 1;
+  const backCollageStart = backCollageEnd - backCollagePagesUsed + 1;
 
   for (let index = rangeInfo.start + 1; index < rangeInfo.start + rangeInfo.count; index += 1) {
-    if (index === frontCollagePageIndex || index === backCollagePageIndex) {
+    const inFrontCollage = index >= frontCollageStart && index <= frontCollageEnd;
+    const inBackCollage = index >= backCollageStart && index <= backCollageEnd;
+
+    if (inFrontCollage || inBackCollage) {
       continue;
     }
 
@@ -3679,6 +3896,20 @@ export default defineConfig(() => {
             }
           });
 
+          server.middlewares.use("/api/system-fonts", async (request, response) => {
+            try {
+              if (request.method !== "GET") {
+                sendJson(response, 405, { error: "Method not allowed" });
+                return;
+              }
+
+              const fonts = await scanSystemFonts();
+              sendJson(response, 200, { fonts });
+            } catch (error) {
+              sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to list system fonts." });
+            }
+          });
+
           server.middlewares.use("/api/pdf-books", async (request, response) => {
             try {
               if (request.method !== "GET") {
@@ -4048,4 +4279,3 @@ export default defineConfig(() => {
     }
   };
 });
-

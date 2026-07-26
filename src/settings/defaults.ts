@@ -25,6 +25,7 @@ const defaultPdfTextStyle: PdfTextStyle = {
   fontFamily: "Malgun Gothic",
   fontSize: 9.5,
   color: "#222222",
+  colorDark: "#e8e6df",
   bold: false,
   italic: false,
   underline: false,
@@ -93,12 +94,12 @@ export const defaultSettings: AppSettings = {
   pdfCornerPatternPath: "assets\\korean-corner-pattern-1.jpeg",
   pdfFonts: defaultPdfFonts,
   pdfStyles: {
-    title: { ...defaultPdfTextStyle, fontSize: 16, color: "#111111", bold: true, lineHeight: 1.18 },
-    date: { ...defaultPdfTextStyle, fontSize: 8, color: "#666666", lineHeight: 1.05 },
-    body: { ...defaultPdfTextStyle, fontSize: 9.5, color: "#222222", lineHeight: 1.18 },
-    comments: { ...defaultPdfTextStyle, fontSize: 8.5, color: "#555555", lineHeight: 1.15 },
-    summary: { ...defaultPdfTextStyle, fontSize: 8.8, color: "#333333", italic: true, lineHeight: 1.16 },
-    tags: { ...defaultPdfTextStyle, fontSize: 8.5, color: "#1f6f68", bold: true, lineHeight: 1.12 }
+    title: { ...defaultPdfTextStyle, fontSize: 16, color: "#111111", colorDark: "#f5f5f0", bold: true, lineHeight: 1.18 },
+    date: { ...defaultPdfTextStyle, fontSize: 8, color: "#666666", colorDark: "#b7bdb9", lineHeight: 1.05 },
+    body: { ...defaultPdfTextStyle, fontSize: 9.5, color: "#222222", colorDark: "#e8e6df", lineHeight: 1.18 },
+    comments: { ...defaultPdfTextStyle, fontSize: 8.5, color: "#555555", colorDark: "#c7ccc8", lineHeight: 1.15 },
+    summary: { ...defaultPdfTextStyle, fontSize: 8.8, color: "#333333", colorDark: "#d8d5cb", italic: true, lineHeight: 1.16 },
+    tags: { ...defaultPdfTextStyle, fontSize: 8.5, color: "#1f6f68", colorDark: "#8ed8c8", bold: true, lineHeight: 1.12 }
   },
   imageLayout: "collage",
   selectedLlmProvider: "openai-frontier",

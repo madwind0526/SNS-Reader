@@ -404,7 +404,15 @@ function normalizeLlmResult(value) {
   const summary = Array.isArray(parsed.summary)
     ? parsed.summary.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 2)
     : [];
-  const tags = Array.isArray(parsed.tags) ? parsed.tags.map(cleanTag).filter(Boolean).slice(0, 10) : [];
+  // Small local models sometimes return tags as a single comma-separated
+  // string instead of a JSON array - recover that instead of silently
+  // discarding the tags entirely.
+  const rawTags = parsed.tags;
+  const tags = Array.isArray(rawTags)
+    ? rawTags.map(cleanTag).filter(Boolean).slice(0, 10)
+    : typeof rawTags === "string"
+      ? rawTags.split(/[,、，]+/).map(cleanTag).filter(Boolean).slice(0, 10)
+      : [];
 
   if (summary.length === 1) {
     const split = splitSummaryLine(summary[0]);
@@ -416,6 +424,10 @@ function normalizeLlmResult(value) {
 
   if (summary.length !== 2) {
     throw new Error("LLM response must include two summary lines.");
+  }
+
+  if (tags.length === 0) {
+    throw new Error("LLM response must include at least one tag.");
   }
 
   return { summary, tags };

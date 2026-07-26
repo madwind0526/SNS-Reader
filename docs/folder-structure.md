@@ -6,6 +6,7 @@ SNS-Reader/
   README.md
   package.json
   index.html
+  vite.config.mts       Vite dev server + dev API (/api/*) + PDF generation backend
   electron/
     main.ts
     preload.ts
@@ -13,18 +14,25 @@ SNS-Reader/
     App.tsx
     main.tsx
     components/
+    settings/
+      defaults.ts
+      storage.ts
+      llm.ts
     styles/
       app.css
     types/
       domain.ts
+  tools/                 Node CLI scripts: import/update collectors, dedupe, validate, enrich, audit
   docs/
     architecture.md
     folder-structure.md
     ui-layout.md
     roadmap.md
-  assets/
+  assets/                Cover images and other bundled app assets
   data/
     sample-md/
+    runtime/             Local settings JSON, Playwright browser profile (gitignored)
+    credentials/         (gitignored, not committed)
   exports/
   memory-bank/
     active-context.md
@@ -39,10 +47,14 @@ SNS-Reader/
 ## 역할
 
 - `electron/`: PC 앱 창, 로컬 파일 접근, 향후 보안 저장소 연동
+- `vite.config.mts`: dev 모드에서 `/api/markdown-cards`, `/api/media`, `/api/settings`, PDF 생성 등 백엔드 역할을 겸하는 Vite 미들웨어. 원래 계획했던 `src/services/*` 모듈 경계 대신 여기와 `tools/*.mjs`에 실제 로직이 있다.
 - `src/`: React UI와 앱 상태
+- `src/settings/`: 설정 기본값, localStorage/API 저장, LLM 프로바이더 설정
 - `src/types/`: SNS 계정, Obsidian export, PDF export 공통 타입
+- `tools/`: 플랫폼별 수집/업데이트, 중복 제거, 검증, LLM 보강, 감사용 CLI 스크립트 (npm script로 연결됨)
 - `docs/`: 설계, UI 배치, 개발 로드맵
 - `data/sample-md/`: PDF 변환 테스트용 Markdown 샘플
+- `data/runtime/`, `data/credentials/`: 로컬 전용 런타임 상태 (git에 포함되지 않음)
 - `exports/`: 생성된 PDF 또는 임시 산출물
 - `memory-bank/`: 프로젝트 진행 상태와 재사용 지식
 

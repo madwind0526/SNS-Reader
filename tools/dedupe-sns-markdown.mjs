@@ -119,6 +119,27 @@ function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function createdTimeMs(value) {
+  const time = Date.parse(String(value || ""));
+
+  return Number.isFinite(time) ? time : 0;
+}
+
+function dateKeyFromCreated(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function commonPrefixLength(left, right) {
+  const max = Math.min(left.length, right.length);
+  let index = 0;
+
+  while (index < max && left[index] === right[index]) {
+    index += 1;
+  }
+
+  return index;
+}
+
 function sectionMediaNames(markdown, section) {
   return [...extractSection(markdown, section).matchAll(/!\[\[([^\]]+)\]\]/g)]
     .map((match) => path.basename(match[1]))
@@ -218,6 +239,52 @@ function duplicatePlan(entries) {
     }
   }
 
+  const byRevisionKey = new Map();
+
+  for (const entry of entries) {
+    const key = [entry.platform, entry.dateKey, normalizeText(entry.title), entry.imageCount].join("\n");
+    const current = byRevisionKey.get(key) ?? [];
+
+    current.push(entry);
+    byRevisionKey.set(key, current);
+  }
+
+  for (const group of byRevisionKey.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    const sorted = group.slice().sort((left, right) => left.createdMs - right.createdMs);
+
+    for (let leftIndex = 0; leftIndex < sorted.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < sorted.length; rightIndex += 1) {
+        const left = sorted[leftIndex];
+        const right = sorted[rightIndex];
+        const timeDelta = Math.abs(right.createdMs - left.createdMs);
+        const leftBody = normalizeText(left.body);
+        const rightBody = normalizeText(right.body);
+        const shorter = leftBody.length <= rightBody.length ? leftBody : rightBody;
+        const longer = leftBody.length <= rightBody.length ? rightBody : leftBody;
+        // A same-day edit often reworks the tail of a post (not just appends to
+        // it), so require most of the shorter body to match from the start
+        // rather than an exact prefix - catches "edited within N minutes" cases
+        // that a strict startsWith() would miss.
+        const prefixRatio = shorter.length > 0 ? commonPrefixLength(shorter, longer) / shorter.length : 0;
+
+        if (
+          left.createdMs > 0 &&
+          right.createdMs > 0 &&
+          timeDelta <= 30 * 60 * 1000 &&
+          shorter.length >= 120 &&
+          longer.length > shorter.length &&
+          prefixRatio >= 0.85
+        ) {
+          union(left.filePath, right.filePath);
+        }
+      }
+    }
+  }
+
   const components = new Map();
 
   for (const entry of entries) {
@@ -289,6 +356,8 @@ async function main() {
       platform,
       postId: readProperty(markdown, "post_id"),
       created: readProperty(markdown, "created"),
+      createdMs: createdTimeMs(readProperty(markdown, "created")),
+      dateKey: dateKeyFromCreated(readProperty(markdown, "created")),
       title: readProperty(markdown, "title"),
       imageCount: readProperty(markdown, "image_count"),
       body: extractSection(markdown, "Body"),

@@ -1,6 +1,6 @@
 {
   "name": "sns-reader",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "private": true,
   "description": "PC app for converting SNS posts into Obsidian Markdown databases and PDF books.",
   "main": "dist-electron/main.js",
@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "fontkit": "^2.0.4",
     "lucide-react": "^0.468.0",
     "pdfkit": "^0.19.1",
     "react": "^18.3.1",

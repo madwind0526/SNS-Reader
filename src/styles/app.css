@@ -1578,6 +1578,10 @@ input[type="checkbox"] {
   width: min(640px, 100%);
 }
 
+.font-picker-shell {
+  width: min(520px, 100%);
+}
+
 .llm-query-shell {
   width: min(820px, 100%);
 }
@@ -2509,6 +2513,12 @@ input[type="checkbox"] {
   gap: 12px;
 }
 
+.pdf-style-target-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .pdf-cover-image-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -2526,22 +2536,150 @@ input[type="checkbox"] {
 
 .font-management {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.font-management-label {
+  color: #60706a;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.dark .font-management-label {
+  color: #bac6c0;
 }
 
 .font-management > .ghost-action {
   justify-self: start;
 }
 
-.font-form-grid {
+.font-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 2px;
+  margin: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid rgba(32, 33, 36, 0.12);
+  border-radius: 8px;
+  padding: 4px;
+  list-style: none;
 }
 
-.font-form-grid .primary-action {
-  align-self: end;
-  justify-self: start;
+.dark .font-list {
+  border-color: rgba(243, 241, 234, 0.14);
+}
+
+.font-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.font-list-item:hover {
+  background: rgba(31, 111, 104, 0.08);
+}
+
+.dark .font-list-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.font-list-item-name {
+  overflow: hidden;
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.font-list-item-remove {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  color: #8a938e;
+}
+
+.font-list-item-remove:hover {
+  color: #ba3030;
+}
+
+.dark .font-list-item-remove {
+  color: #9aa5a0;
+}
+
+.dark .font-list-item-remove:hover {
+  color: #e07a7a;
+}
+
+.font-picker-body {
+  min-width: 0;
+}
+
+.font-picker-error {
+  color: #ba3030;
+}
+
+.dark .font-picker-error {
+  color: #e07a7a;
+}
+
+.font-preview-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  border: 1px solid rgba(32, 33, 36, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+  padding: 16px;
+}
+
+.dark .font-preview-panel {
+  border-color: rgba(243, 241, 234, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.font-preview-label {
+  color: #60706a;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.dark .font-preview-label {
+  color: #bac6c0;
+}
+
+.font-preview-text {
+  display: grid;
+  gap: 6px;
+  min-height: 140px;
+  border: 1px solid rgba(31, 111, 104, 0.12);
+  border-radius: 8px;
+  background: rgba(246, 247, 244, 0.72);
+  padding: 16px;
+  font-size: 22px;
+  line-height: 1.5;
+}
+
+.dark .font-preview-text {
+  border-color: rgba(142, 216, 200, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.font-preview-text p {
+  margin: 0;
+}
+
+.font-preview-placeholder {
+  color: #8a938e;
+  font-size: 0.92rem !important;
+  font-family: inherit !important;
+}
+
+.dark .font-preview-placeholder {
+  color: #9aa5a0;
 }
 
 .pdf-style-preview {
@@ -2587,6 +2725,37 @@ input[type="checkbox"] {
 
 .dark .pdf-style-preview-editor {
   background: rgba(0, 0, 0, 0.18);
+}
+
+/* The color-theme picker inside the Style panel lets the user preview the
+   Light or Dark PDF color independent of the app's own current theme, so
+   these force the preview panel's own look regardless of ambient .dark. */
+.pdf-style-preview.theme-light {
+  border-color: rgba(32, 33, 36, 0.12);
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.pdf-style-preview.theme-light span {
+  color: #60706a;
+}
+
+.pdf-style-preview.theme-light .pdf-style-preview-editor {
+  border-color: rgba(31, 111, 104, 0.12);
+  background: rgba(246, 247, 244, 0.72);
+}
+
+.pdf-style-preview.theme-dark {
+  border-color: rgba(243, 241, 234, 0.14);
+  background: #20231f;
+}
+
+.pdf-style-preview.theme-dark span {
+  color: #bac6c0;
+}
+
+.pdf-style-preview.theme-dark .pdf-style-preview-editor {
+  border-color: rgba(142, 216, 200, 0.16);
+  background: rgba(0, 0, 0, 0.28);
 }
 
 .pdf-overview-options {

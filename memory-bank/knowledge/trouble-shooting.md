@@ -34,3 +34,9 @@ Reusable bug fixes and environment notes will be accumulated here.
 - Local Ollama enrichment can be slow enough that multi-file batches appear stalled. Log the relative Markdown path before every LLM call and set a per-request timeout so the blocked file is visible.
 - LLM enrichment must skip generated backup folders such as `_archive`. Otherwise resumable year/provider batches can spend time enriching backup copies and make progress counts misleading.
 - If a compact filter control mixes `<label>` wrappers and non-label controls in one grid row, global label margins can vertically offset only the label cells. Override the component-specific label margin before tuning slider geometry.
+
+# Wave 15 Troubleshooting
+
+- Mesh View blanked out when rendering all cards because `edges.push(...edgeWeights.values())` exceeded the browser call-stack limit with a large edge map. Use `Array.from(edgeWeights.values())` instead of spread-pushing into an array inside large graph loops.
+- PDF font preview and rendering need explicit font-file paths plus `@font-face` loading in the browser; relying on CSS family names alone made several Korean font options render identically.
+- Generated PDF cards need a separate transparent hit area and a higher z-index delete button so card preview click and PDF deletion do not compete for the same click target.

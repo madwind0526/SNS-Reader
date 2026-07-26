@@ -16,6 +16,7 @@ export interface PdfTextStyle {
   fontFamily: string;
   fontSize: number;
   color: string;
+  colorDark: string;
   bold: boolean;
   italic: boolean;
   underline: boolean;

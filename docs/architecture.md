@@ -12,22 +12,26 @@ SNS Reader는 PC에서 실행되는 로컬 앱으로, 사용자가 지정한 SNS
 - Shell: Electron
 - UI: React + TypeScript + Vite
 - Icons: lucide-react
-- Storage: local JSON 설정 파일 + OS keychain 연동 예정
+- Storage: local JSON 설정 파일 (`data/runtime/app-settings.json`) + OS keychain 연동 예정
 - Markdown: frontmatter + body markdown
-- PDF: HTML/CSS print rendering 또는 headless Chromium 기반 생성 예정
+- PDF: `pdfkit` 기반 직접 렌더링 (`vite.config.mts` dev API 안에서 생성)
 
-## 큰 모듈 경계
+## 실제 모듈 경계 (2026-07-26 기준)
+
+원래 계획했던 `src/services/{collectors,obsidian,pdf,settings}` 분리 대신, 실제 구현은 아래 경계로 자리 잡았다.
 
 ```text
 src/
-  components/          UI components
-  types/               Shared domain types
-  services/
-    collectors/        SNS source readers
-    obsidian/          Markdown and media export
-    pdf/               PDF book generation
-    settings/          Local settings and credential references
+  App.tsx              Main UI shell (single large component)
+  settings/            Local settings defaults/storage/LLM provider config
+  types/domain.ts       Shared domain types
+
+tools/                  SNS collectors, dedupe, validate, LLM enrich, audit (Node CLI, run via npm scripts)
+
+vite.config.mts          Dev API (/api/markdown-cards, /api/media, /api/settings) + PDF generation backend
 ```
+
+`src/services/*` 경계로의 리팩터링은 아직 진행되지 않았다; 향후 Electron 프로덕션 연결(로드맵 Wave 6) 시점에 재검토가 필요하다.
 
 ## 수집 계층
 

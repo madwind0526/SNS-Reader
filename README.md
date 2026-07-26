@@ -2,12 +2,15 @@
 
 SNS Reader는 Facebook, Instagram, X, Naver Blog 같은 SNS/블로그 글을 읽어서 Obsidian용 Markdown Database와 PDF 책으로 정리하는 PC 앱입니다.
 
-## 현재 상태
+## 현재 상태 (2026-07-26, v0.6.0)
 
-- Electron + React + TypeScript 프로젝트 초기화
-- Obsidian DB 만들기 / PDF 만들기 / 설정 메뉴 UI 초안
-- 라이트/다크 모드 토글
-- 설계 문서와 폴더 구조 문서 작성
+- Electron + React + TypeScript + Vite 앱, Obsidian DB 만들기 / PDF 만들기 / Mesh View / 설정 메뉴 구현
+- SNS 수집: Facebook·Instagram·Threads(공식 export), Naver Blog(공개 크롤링 + 증분 업데이트), YouTube(Takeout 커뮤니티) — `tools/import-*.mjs`
+- 로그인 필요 플랫폼은 Playwright 지속 프로필 기반 로그인 브라우저로 세션 수집
+- LLM 기반 요약/태그 자동 보강 + 재개 가능한 감사 파이프라인 (`tools/enrich-sns-markdown.mjs`, `tools/audit-sns-enrichment.mjs`)
+- PDF Maker: 연도/날짜/페이지 수 분할, 표지·콜라주·오버뷰·워드클라우드, 타이포그래피 설정
+- Mesh View: 태그 공유 기반 포스트 그래프 시각화
+- 남은 큰 작업: Windows 설치 파일 패키징 (`docs/roadmap.md`의 Wave 6 참고)
 
 ## 실행
 

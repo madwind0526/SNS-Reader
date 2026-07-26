@@ -33,7 +33,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { defaultSettings, fieldLabels, pdfStyleLabels, platformLabels } from "./settings/defaults";
 import { getAvailableLlmProviders, getPreferredLlmProvider } from "./settings/llm";
 import { clearSettings, loadSettings, loadSettingsFile, saveSettings } from "./settings/storage";
-import type { AppSettings, ExportField, LlmProviderOption, PdfStyleTarget, PdfTextStyle, SnsAccountConfig, SnsPlatform } from "./types/domain";
+import type { AppSettings, ExportField, LlmProviderOption, PdfFontConfig, PdfStyleTarget, PdfTextStyle, SnsAccountConfig, SnsPlatform } from "./types/domain";
 
 type ViewMode = "sns-read" | "pdf-write" | "settings" | "mesh-view";
 type AccountFilter = "total" | string;
@@ -525,30 +525,6 @@ function getProviderDisplayName(provider: LlmProviderOption, envValues: LlmEnvVa
   }
 
   return `${provider.label} - ${getProviderDisplayModel(provider, envValues)}`;
-}
-
-function getReadablePreviewColor(color: string, theme: AppSettings["theme"]) {
-  const match = String(color || "").match(/^#?([0-9a-f]{6})$/i);
-
-  if (!match) {
-    return theme === "dark" ? "#f3f1ea" : "#202124";
-  }
-
-  const hex = match[1];
-  const red = Number.parseInt(hex.slice(0, 2), 16) / 255;
-  const green = Number.parseInt(hex.slice(2, 4), 16) / 255;
-  const blue = Number.parseInt(hex.slice(4, 6), 16) / 255;
-  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-
-  if (theme === "dark" && luminance < 0.36) {
-    return "#f3f1ea";
-  }
-
-  if (theme === "light" && luminance > 0.78) {
-    return "#202124";
-  }
-
-  return color;
 }
 
 function detectPlatformFromArchiveName(fileName: string): SnsPlatform | null {
@@ -3108,9 +3084,13 @@ function PdfCreatorModal({
   onClose: () => void;
 }) {
   const [styleTarget, setStyleTarget] = useState<PdfStyleTarget>("body");
+  const [colorTheme, setColorTheme] = useState<"light" | "dark">("light");
   const [stylePreviewText, setStylePreviewText] = useState("가나다라마바사아자차카타파하\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz");
+  const [isFontPickerOpen, setIsFontPickerOpen] = useState(false);
   const fontOptions = settings.pdfFonts.length ? settings.pdfFonts : defaultSettings.pdfFonts;
   const activeStyle = settings.pdfStyles[styleTarget];
+  const activeColorKey = colorTheme === "dark" ? "colorDark" : "color";
+  const activeColor = colorTheme === "dark" ? activeStyle.colorDark || activeStyle.color : activeStyle.color;
   const selectedFontKnown = fontOptions.some((font) => font.fontFamily === activeStyle.fontFamily);
   const visibleFontOptions = selectedFontKnown
     ? fontOptions
@@ -3125,7 +3105,7 @@ function PdfCreatorModal({
         }
       ];
   const stylePreview: CSSProperties = {
-    color: getReadablePreviewColor(activeStyle.color, settings.theme),
+    color: activeColor,
     fontFamily: `"${activeStyle.fontFamily}", "Malgun Gothic", sans-serif`,
     fontSize: `${activeStyle.fontSize * 2}px`,
     fontStyle: activeStyle.italic ? "italic" : "normal",
@@ -3136,6 +3116,7 @@ function PdfCreatorModal({
   };
 
   return (
+    <>
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <section className="modal-shell pdf-creator-shell" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Create PDF">
         <header className="modal-header">
@@ -3267,16 +3248,49 @@ function PdfCreatorModal({
                 value={settings.pdfCornerPatternPath}
               />
             </label>
-            <label>
-              Style target
-              <select onChange={(event) => setStyleTarget(event.target.value as PdfStyleTarget)} value={styleTarget}>
-                {Object.entries(pdfStyleLabels).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
+            <div className="font-management">
+              <span className="font-management-label">등록된 폰트</span>
+              <ul className="font-list">
+                {fontOptions.map((font) => (
+                  <li className="font-list-item" key={font.id}>
+                    <span className="font-list-item-name" style={{ fontFamily: `"${font.fontFamily}"` }}>
+                      {font.label}
+                    </span>
+                    <button
+                      aria-label={`${font.label} 삭제`}
+                      className="icon-button font-list-item-remove"
+                      onClick={() => updateSettings("pdfFonts", settings.pdfFonts.filter((entry) => entry.id !== font.id))}
+                      title="삭제"
+                      type="button"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </li>
                 ))}
-              </select>
-            </label>
+              </ul>
+              <button className="ghost-action compact" onClick={() => setIsFontPickerOpen(true)} type="button">
+                <Plus size={16} /> 폰트 추가
+              </button>
+            </div>
+            <div className="pdf-style-target-row">
+              <label>
+                Style target
+                <select onChange={(event) => setStyleTarget(event.target.value as PdfStyleTarget)} value={styleTarget}>
+                  {Object.entries(pdfStyleLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Color theme
+                <select onChange={(event) => setColorTheme(event.target.value as "light" | "dark")} value={colorTheme}>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </label>
+            </div>
             <div className="pdf-style-grid">
               <label>
                 Font
@@ -3293,8 +3307,8 @@ function PdfCreatorModal({
                 <input min={7} max={32} onChange={(event) => updatePdfStyle(styleTarget, "fontSize", Number(event.target.value))} type="number" value={activeStyle.fontSize} />
               </label>
               <label>
-                Color
-                <input onChange={(event) => updatePdfStyle(styleTarget, "color", event.target.value)} type="color" value={activeStyle.color} />
+                {`Color (${colorTheme === "dark" ? "Dark" : "Light"})`}
+                <input onChange={(event) => updatePdfStyle(styleTarget, activeColorKey, event.target.value)} type="color" value={activeColor} />
               </label>
               <label>
                 Line height
@@ -3315,8 +3329,8 @@ function PdfCreatorModal({
                 Underline
               </label>
             </div>
-            <div className="pdf-style-preview">
-              <span>미리보기</span>
+            <div className={`pdf-style-preview theme-${colorTheme}`}>
+              <span>{`미리보기 (${colorTheme === "dark" ? "Dark" : "Light"})`}</span>
               <div
                 className="pdf-style-preview-editor"
                 contentEditable
@@ -3342,6 +3356,142 @@ function PdfCreatorModal({
               {creating ? "생성 중..." : "생성"}
             </button>
           </div>
+        </footer>
+      </section>
+    </div>
+    {isFontPickerOpen && (
+      <FontPickerModal
+        existingFonts={settings.pdfFonts}
+        onAdd={(font) => updateSettings("pdfFonts", [...settings.pdfFonts, font])}
+        onClose={() => setIsFontPickerOpen(false)}
+      />
+    )}
+    </>
+  );
+}
+
+function FontPickerModal({
+  existingFonts,
+  onAdd,
+  onClose
+}: {
+  existingFonts: PdfFontConfig[];
+  onAdd: (font: PdfFontConfig) => void;
+  onClose: () => void;
+}) {
+  const [systemFonts, setSystemFonts] = useState<Array<{ family: string; regularPath: string; boldPath: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedFamily, setSelectedFamily] = useState("");
+  const previewText = "가나다라마바사아자차카타파하\nABCDEFGHIJKLMNOPQRSTUVWXYZ\nabcdefghijklmnopqrstuvwxyz";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const response = await fetch("/api/system-fonts", { cache: "no-store" });
+
+        if (!response.ok) {
+          throw new Error(`System font scan failed with ${response.status}`);
+        }
+
+        const payload = (await response.json()) as { fonts?: Array<{ family: string; regularPath: string; boldPath: string }> };
+
+        if (!cancelled) {
+          setSystemFonts(payload.fonts ?? []);
+        }
+      } catch (fetchError) {
+        if (!cancelled) {
+          setError(fetchError instanceof Error ? fetchError.message : "시스템 폰트를 불러오지 못했습니다.");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedFont = systemFonts.find((font) => font.family === selectedFamily) ?? null;
+  const alreadyAdded = selectedFont
+    ? existingFonts.some((font) => font.fontFamily.toLowerCase() === selectedFont.family.toLowerCase())
+    : false;
+
+  const handleAdd = () => {
+    if (!selectedFont || alreadyAdded) {
+      return;
+    }
+
+    const id = `system-${selectedFont.family.toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-")}`;
+
+    onAdd({
+      id,
+      label: selectedFont.family,
+      fontFamily: selectedFont.family,
+      regularPath: selectedFont.regularPath,
+      boldPath: selectedFont.boldPath || undefined
+    });
+    onClose();
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <section className="modal-shell font-picker-shell" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add system font">
+        <header className="modal-header">
+          <div>
+            <p className="eyebrow">PDF 폰트</p>
+            <h2>폰트 추가</h2>
+          </div>
+          <button className="icon-button" onClick={onClose} title="닫기" type="button">
+            <X size={20} />
+          </button>
+        </header>
+        <div className="modal-body font-picker-body">
+          <label>
+            시스템 폰트
+            <select
+              disabled={loading || Boolean(error)}
+              onChange={(event) => setSelectedFamily(event.target.value)}
+              value={selectedFamily}
+            >
+              <option disabled value="">
+                {loading ? "폰트를 불러오는 중..." : "폰트를 선택하세요"}
+              </option>
+              {systemFonts.map((font) => (
+                <option key={font.family} value={font.family}>
+                  {font.family}
+                </option>
+              ))}
+            </select>
+          </label>
+          {error && <p className="hint font-picker-error">{error}</p>}
+          <div className="font-preview-panel">
+            <span className="font-preview-label">미리보기</span>
+            <div
+              className="font-preview-text"
+              style={selectedFont ? { fontFamily: `"${selectedFont.family}"` } : undefined}
+            >
+              {selectedFont ? (
+                previewText.split("\n").map((line, index) => <p key={index}>{line}</p>)
+              ) : (
+                <p className="font-preview-placeholder">폰트를 선택하면 여기에 미리보기가 표시됩니다.</p>
+              )}
+            </div>
+            {alreadyAdded && <p className="hint">이미 추가된 폰트입니다.</p>}
+          </div>
+        </div>
+        <footer className="modal-footer">
+          <button className="ghost-action compact" onClick={onClose} type="button">
+            취소
+          </button>
+          <button className="primary-action compact" disabled={!selectedFont || alreadyAdded} onClick={handleAdd} type="button">
+            확인
+          </button>
         </footer>
       </section>
     </div>
