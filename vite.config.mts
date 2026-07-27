@@ -3951,7 +3951,48 @@ export default defineConfig(() => {
                 return;
               }
 
-              sendJson(response, 200, await buildMarkdownCards(settingsFilePath));
+              const payload = await buildMarkdownCards(settingsFilePath);
+
+              // The grid only ever shows bodyPreview/summary - body and commentsText can be
+              // long (full post text) and get re-sent on every 5s poll across ~thousands of
+              // cards. Build a fresh array/objects rather than mutating the cached payload's
+              // cards (buildMarkdownCards can return the same object it stores in its cache).
+              sendJson(response, 200, {
+                ...payload,
+                cards: payload.cards.map(({ body, commentsText, ...listCard }: Record<string, any>) => listCard)
+              });
+            } catch (error) {
+              sendJson(response, 500, { error: error instanceof Error ? error.message : "Unknown error" });
+            }
+          });
+
+          server.middlewares.use("/api/markdown-card-detail", async (request, response) => {
+            try {
+              if (request.method !== "GET") {
+                sendJson(response, 405, { error: "Method not allowed" });
+                return;
+              }
+
+              const settings = await readCachedSettings(settingsFilePath);
+              const root = path.resolve(settings.obsidianRootFolder || process.env.SNS_READER_OBSIDIAN_FOLDER || "data/sample-md");
+              const accounts = Array.isArray(settings.accounts) ? settings.accounts : [];
+              const url = new URL(request.url ?? "", "http://localhost");
+              const relativePath = url.searchParams.get("path") ?? "";
+              const filePath = path.resolve(root, relativePath.replaceAll("/", path.sep));
+
+              if (!filePath.toLowerCase().endsWith(".md") || !isPathInside(filePath, root)) {
+                sendJson(response, 403, { error: "Markdown path is outside the configured SNS folder." });
+                return;
+              }
+
+              const card = await buildMarkdownCard(root, accounts, filePath);
+
+              if (!card) {
+                sendJson(response, 404, { error: "Post not found." });
+                return;
+              }
+
+              sendJson(response, 200, card);
             } catch (error) {
               sendJson(response, 500, { error: error instanceof Error ? error.message : "Unknown error" });
             }

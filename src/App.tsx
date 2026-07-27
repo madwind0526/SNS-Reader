@@ -574,6 +574,7 @@ export function App() {
   const [convertedPosts, setConvertedPosts] = useState<ConvertedPost[]>([]);
   const [pdfBooks, setPdfBooks] = useState<PdfBook[]>([]);
   const [selectedPost, setSelectedPost] = useState<ConvertedPost | null>(null);
+  const [isLoadingPostDetail, setIsLoadingPostDetail] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [deleteCandidate, setDeleteCandidate] = useState<ConvertedPost | null>(null);
   const [deletePdfCandidate, setDeletePdfCandidate] = useState<PdfBook | null>(null);
@@ -646,6 +647,30 @@ export function App() {
         setConvertedPosts([]);
         setSystemMessage(error instanceof Error ? error.message : "Markdown scan failed.");
       }
+    }
+  };
+
+  const openPostDetail = async (post: ConvertedPost) => {
+    // The list payload omits body/commentsText (see /api/markdown-cards) to keep the poll
+    // response small - show what we already have immediately, then fill in the full content.
+    setSelectedPost(post);
+    setSystemMessage(`${post.title || "Untitled Post"} opened.`);
+    setIsLoadingPostDetail(true);
+
+    try {
+      const response = await fetch(`/api/markdown-card-detail?path=${encodeURIComponent(post.filePath)}`);
+
+      if (!response.ok) {
+        throw new Error(`Failed to load post detail with ${response.status}`);
+      }
+
+      const detail = (await response.json()) as ConvertedPost;
+
+      setSelectedPost((current) => (current?.id === post.id ? { ...current, ...detail } : current));
+    } catch (error) {
+      console.error("Failed to load post detail.", error);
+    } finally {
+      setIsLoadingPostDetail(false);
     }
   };
 
@@ -783,12 +808,15 @@ export function App() {
   }, [query]);
 
   useEffect(() => {
+    // Only close the modal if the post was actually deleted - the list refresh no longer
+    // carries body/commentsText, so replacing `current` with the matching list entry would
+    // blank out the already-loaded detail content on every poll tick.
     setSelectedPost((current) => {
       if (!current) {
         return current;
       }
 
-      return convertedPosts.find((post) => post.id === current.id) ?? null;
+      return convertedPosts.some((post) => post.id === current.id) ? current : null;
     });
   }, [convertedPosts]);
 
@@ -1373,10 +1401,7 @@ export function App() {
           <ConvertedFileLibrary
             posts={visiblePosts}
             onDeletePost={setDeleteCandidate}
-            onOpenPost={(post) => {
-              setSelectedPost(post);
-              setSystemMessage(`${post.title || "Untitled Post"} opened.`);
-            }}
+            onOpenPost={openPostDetail}
           />
         )}
 
@@ -1545,6 +1570,7 @@ export function App() {
 
       {selectedPost && (
         <PostDetailModal
+          isLoadingDetail={isLoadingPostDetail}
           post={selectedPost}
           onClose={() => setSelectedPost(null)}
           onOpenImage={(imageUrl) => {
@@ -2277,10 +2303,12 @@ function DetailImageStrip({
 }
 
 function PostDetailModal({
+  isLoadingDetail,
   post,
   onClose,
   onOpenImage
 }: {
+  isLoadingDetail: boolean;
   post: ConvertedPost;
   onClose: () => void;
   onOpenImage: (imageUrl: string) => void;
@@ -2324,14 +2352,20 @@ function PostDetailModal({
           </div>
 
           <section className="post-detail-section">
-            {bodyParagraphs.map((paragraph, index) => (
-              <p key={`${post.id}-body-${index}`}>{paragraph}</p>
-            ))}
+            {isLoadingDetail ? (
+              <p className="hint">불러오는 중...</p>
+            ) : (
+              bodyParagraphs.map((paragraph, index) => <p key={`${post.id}-body-${index}`}>{paragraph}</p>)
+            )}
           </section>
 
           <section className="post-detail-section">
             <h3>댓글</h3>
-            <p>{post.commentsText && !post.commentsText.includes("No comments") ? post.commentsText : "저장된 댓글이 없습니다."}</p>
+            {isLoadingDetail ? (
+              <p className="hint">불러오는 중...</p>
+            ) : (
+              <p>{post.commentsText && !post.commentsText.includes("No comments") ? post.commentsText : "저장된 댓글이 없습니다."}</p>
+            )}
             {post.reactionText && <p>{post.reactionText}</p>}
           </section>
 
