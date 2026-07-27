@@ -557,6 +557,7 @@ export function App() {
   const [view, setView] = useState<ViewMode>("sns-read");
   const [activeAccount, setActiveAccount] = useState<AccountFilter>("total");
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [accountDraft, setAccountDraft] = useState<Omit<SnsAccountConfig, "id">>(emptyAccount);
   const [editingAccount, setEditingAccount] = useState<SnsAccountConfig | null>(null);
@@ -583,6 +584,9 @@ export function App() {
   const [isCreatingPdf, setIsCreatingPdf] = useState(false);
   const [saveStatus, setSaveStatus] = useState("No changes saved in this session.");
   const [systemMessage, setSystemMessage] = useState("Ready. Waiting for SNS conversion tasks.");
+  const convertedPostsRequestIdRef = useRef(0);
+  const convertedPostsFingerprintRef = useRef("");
+  const settingsPersistedSinceMountRef = useRef(false);
   const llmProviders = useMemo(() => getAvailableLlmProviders(), []);
   const selectedLlmProvider = useMemo(
     () => getPreferredLlmProvider(llmProviders, settings.selectedLlmProvider),
@@ -598,6 +602,10 @@ export function App() {
   }, [settings.storageLayout]);
 
   const refreshConvertedPosts = async ({ silent = false } = {}) => {
+    // The 5s poller and explicit post-mutation refreshes can overlap; an older in-flight
+    // response landing after a newer one must not clobber it with stale data.
+    const requestId = (convertedPostsRequestIdRef.current += 1);
+
     try {
       const response = await fetch(`/api/markdown-cards?ts=${Date.now()}`, {
         cache: "no-store",
@@ -610,11 +618,30 @@ export function App() {
       const payload = (await response.json()) as { cards?: ConvertedPost[]; root?: string };
       const cards = payload.cards ?? [];
 
-      setConvertedPosts(cards);
+      if (requestId !== convertedPostsRequestIdRef.current) {
+        return;
+      }
+
+      // The 5s poller re-fetches unconditionally even when nothing on disk changed. Skipping
+      // setState on an unchanged result avoids re-rendering the whole (unvirtualized) card grid
+      // and re-running every downstream useMemo every 5 seconds while the window is focused.
+      const fingerprint = cards
+        .map((post) => `${post.id}:${post.commentCount}:${post.imageCount}:${post.tags.length}:${post.title}`)
+        .join("|");
+
+      if (fingerprint !== convertedPostsFingerprintRef.current) {
+        convertedPostsFingerprintRef.current = fingerprint;
+        setConvertedPosts(cards);
+      }
+
       if (!silent) {
         setSystemMessage(`Loaded ${cards.length} converted Markdown files from ${payload.root ?? "SNS folder"}.`);
       }
     } catch (error) {
+      if (requestId !== convertedPostsRequestIdRef.current) {
+        return;
+      }
+
       if (!silent) {
         setConvertedPosts([]);
         setSystemMessage(error instanceof Error ? error.message : "Markdown scan failed.");
@@ -729,7 +756,9 @@ export function App() {
     const loadInitialData = async () => {
       const fileSettings = await loadSettingsFile();
 
-      if (mounted && fileSettings) {
+      // If the user already saved a change locally while this fetch was in flight, applying
+      // the (now stale) on-disk snapshot here would silently revert that change.
+      if (mounted && fileSettings && !settingsPersistedSinceMountRef.current) {
         setSettings(fileSettings);
       }
 
@@ -746,6 +775,12 @@ export function App() {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => setDebouncedQuery(query), 250);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [query]);
 
   useEffect(() => {
     setSelectedPost((current) => {
@@ -790,7 +825,7 @@ export function App() {
   );
 
   const visiblePosts = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = debouncedQuery.trim().toLowerCase();
 
     return querySourcePosts.filter((post) => {
       const commentAuthorTerms = splitCommaTerms(cardFilters.commentAuthor);
@@ -820,7 +855,7 @@ export function App() {
 
       return filterMatches && queryMatches;
     });
-  }, [cardFilters, connectionCounts, query, querySourcePosts]);
+  }, [cardFilters, connectionCounts, debouncedQuery, querySourcePosts]);
 
   const sidebarItems = useMemo(() => {
     const totalCount = convertedPosts.length;
@@ -905,6 +940,7 @@ export function App() {
   };
 
   const handleSave = () => {
+    settingsPersistedSinceMountRef.current = true;
     saveSettings(settings);
     void refreshConvertedPosts();
     const savedAt = new Date().toLocaleTimeString([], {
@@ -917,6 +953,7 @@ export function App() {
   };
 
   const handleReset = () => {
+    settingsPersistedSinceMountRef.current = true;
     clearSettings();
     setSettings(defaultSettings);
     setAccountDraft(emptyAccount);
@@ -1025,6 +1062,7 @@ export function App() {
   };
 
   const selectLlmProvider = (providerId: string) => {
+    settingsPersistedSinceMountRef.current = true;
     setSettings((current) => {
       const nextSettings = {
         ...current,
@@ -2147,7 +2185,7 @@ function CardImagePreview({
     <div className={imageUrl ? "post-thumb has-image" : "post-thumb"}>
       {imageUrl ? (
         <>
-          <img alt="" src={imageUrl} />
+          <img alt="" decoding="async" loading="lazy" src={imageUrl} />
           <span className="image-count-badge">
             {imageCount} {imageCount === 1 ? "image" : "images"}
           </span>
@@ -2955,6 +2993,25 @@ function FieldSelector({
   );
 }
 
+function PlatformSelector({
+  selectedPlatforms,
+  onToggle
+}: {
+  selectedPlatforms: SnsPlatform[];
+  onToggle: (platform: SnsPlatform) => void;
+}) {
+  return (
+    <div className="field-grid">
+      {(Object.keys(platformLabels) as SnsPlatform[]).map((platform) => (
+        <label className="check-tile" key={platform}>
+          <input checked={selectedPlatforms.includes(platform)} onChange={() => onToggle(platform)} type="checkbox" />
+          <span>{platformLabels[platform]}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 function RequiredFields() {
   return (
     <div className="required-field-grid" aria-label="Required fields">
@@ -3160,6 +3217,19 @@ function PdfCreatorModal({
               </select>
             </label>
             <PdfSplitControls settings={settings} updateSettings={updateSettings} />
+            <span className="font-management-label">SNS</span>
+            <PlatformSelector
+              onToggle={(platform) =>
+                updateSettings(
+                  "pdfPlatforms",
+                  settings.pdfPlatforms.includes(platform)
+                    ? settings.pdfPlatforms.filter((item) => item !== platform)
+                    : [...settings.pdfPlatforms, platform]
+                )
+              }
+              selectedPlatforms={settings.pdfPlatforms}
+            />
+            <p className="hint">아무것도 선택하지 않으면 모든 SNS가 포함됩니다.</p>
             <label>
               Image layout
               <select
@@ -4270,126 +4340,6 @@ function LlmProviderConfigDialog({
           )}
           {error && <p className="form-error">{error}</p>}
           <p className="hint">Input values are only used to create or update .env, not saved as separate app settings.</p>
-        </div>
-        <footer className="modal-footer">
-          <button className="ghost-action compact" onClick={onCancel} type="button">
-            Cancel
-          </button>
-          <button className="primary-action compact" disabled={!canSave || saving} onClick={submit} type="button">
-            {saving ? "Saving..." : "Save to .env"}
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
-function LlmProviderConfigModal({
-  envValues,
-  provider,
-  onCancel,
-  onConfirm
-}: {
-  envValues: LlmEnvValues;
-  provider: LlmProviderOption;
-  onCancel: () => void;
-  onConfirm: (provider: LlmProviderOption, draft: LlmConfigDraft) => Promise<void>;
-}) {
-  const displayModel = getProviderDisplayModel(provider, envValues);
-  const [draft, setDraft] = useState<LlmConfigDraft>({
-    apiKey: "",
-    baseUrl: envValues[getProviderBaseUrlEnvKey(provider)] || (provider.id.startsWith("ollama") ? "http://127.0.0.1:11434" : provider.id === "openai-frontier" ? "https://api.openai.com/v1" : ""),
-    model: provider.id === "local-preview" || provider.id === "custom" ? envValues.SNS_READER_LLM_MODEL || "" : displayModel,
-    providerLabel: provider.id === "custom" ? envValues.VITE_LLM_CUSTOM_PROVIDER_LABEL || "" : provider.label
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const needsApiKey = provider.id !== "local-preview" && !provider.id.startsWith("ollama");
-  const needsBaseUrl = provider.id === "custom" || provider.id.startsWith("ollama") || provider.id === "openai-frontier";
-  const needsModel = provider.id !== "local-preview";
-  const canSave =
-    provider.id === "local-preview" ||
-    (!needsApiKey || draft.apiKey.trim()) &&
-      (!needsBaseUrl || draft.baseUrl.trim()) &&
-      (!needsModel || draft.model.trim());
-
-  const submit = async () => {
-    if (!canSave || saving) {
-      return;
-    }
-
-    setSaving(true);
-    setError("");
-
-    try {
-      await onConfirm(provider, draft);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "LLM 설정 저장에 실패했습니다.");
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="modal-backdrop" onClick={onCancel} role="presentation">
-      <section
-        className="modal-shell llm-config-shell"
-        onClick={(event) => event.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="LLM 설정"
-      >
-        <header className="modal-header">
-          <div>
-            <p className="eyebrow">LLM Setting</p>
-            <h2>{provider.label}</h2>
-          </div>
-          <button className="icon-button" onClick={onCancel} title="Close" type="button">
-            <X size={20} />
-          </button>
-        </header>
-        <div className="modal-body">
-          <div className="llm-config-summary">
-            <Bot size={20} />
-            <div>
-              <strong>{provider.modelLabel}</strong>
-              <strong>{displayModel}</strong>
-              <span>{getProviderEnvKeys(provider).length ? `${getProviderEnvKeys(provider).join(", ")} 값을 .env에 저장합니다.` : "추가 설정이 필요 없는 preview 모델입니다."}</span>
-            </div>
-          </div>
-          {needsModel && (
-            <label>
-              Model
-              <input
-                onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
-                placeholder="gemma4:latest, gpt-4.1, etc."
-                value={draft.model}
-              />
-            </label>
-          )}
-          {needsBaseUrl && (
-            <label>
-              Base URL
-              <input
-                onChange={(event) => setDraft((current) => ({ ...current, baseUrl: event.target.value }))}
-                placeholder="https://api.example.com/v1"
-                value={draft.baseUrl}
-              />
-            </label>
-          )}
-          {needsApiKey && (
-            <label>
-              API Key
-              <input
-                autoComplete="off"
-                onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
-                placeholder="저장 시 .env에만 기록"
-                type="password"
-                value={draft.apiKey}
-              />
-            </label>
-          )}
-          {error && <p className="form-error">{error}</p>}
-          <p className="hint">입력값은 별도 설정 파일에 저장하지 않고 .env 생성/수정에만 사용합니다.</p>
         </div>
         <footer className="modal-footer">
           <button className="ghost-action compact" onClick={onCancel} type="button">

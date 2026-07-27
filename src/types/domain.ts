@@ -84,6 +84,7 @@ export interface AppSettings {
   storageLayout: StorageLayout;
   optionalFields: ExportField[];
   pdfFields: ExportField[];
+  pdfPlatforms: SnsPlatform[];
   pdfSplitMode: PdfSplitMode;
   pdfYear: string;
   pdfDateFrom: string;

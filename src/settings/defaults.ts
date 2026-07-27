@@ -81,6 +81,7 @@ export const defaultSettings: AppSettings = {
   storageLayout: "platform-month",
   optionalFields: ["images", "summary", "tags"],
   pdfFields: ["comments", "images", "summary", "tags"],
+  pdfPlatforms: [],
   pdfSplitMode: "year",
   pdfYear: "",
   pdfDateFrom: "",

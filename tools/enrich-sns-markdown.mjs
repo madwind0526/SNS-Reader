@@ -1024,7 +1024,14 @@ async function applyResults(root, resultsFile, config) {
       continue;
     }
 
-    if (record.error || !Array.isArray(record.summary) || !Array.isArray(record.tags)) {
+    // Mirror normalizeLlmResult's validation: a hand-edited or externally produced results
+    // file could otherwise pass an array-shape check with an empty summary/tags array and
+    // silently blank out a post's frontmatter.
+    const hasValidSummary =
+      Array.isArray(record.summary) && record.summary.length === 2 && record.summary.every((line) => String(line || "").trim());
+    const hasValidTags = Array.isArray(record.tags) && record.tags.some((tag) => String(tag || "").trim());
+
+    if (record.error || !hasValidSummary || !hasValidTags) {
       skipped += 1;
       continue;
     }

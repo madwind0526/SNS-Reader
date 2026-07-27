@@ -32,6 +32,49 @@ function sendJson(response: import("node:http").ServerResponse, statusCode: numb
   response.end(JSON.stringify(payload));
 }
 
+// This server only ever expects requests from the app's own Electron window / dev-server
+// origin. Vite's built-in CORS middleware never runs for these routes (this plugin's
+// configureServer registers them before Vite's internal middleware stack), so without this
+// check any website open in a normal browser tab could blind-POST/PUT/DELETE here while the
+// dev server is running.
+const TRUSTED_API_ORIGINS = new Set(["http://127.0.0.1:5173", "http://localhost:5173"]);
+
+function isTrustedApiRequest(request: import("node:http").IncomingMessage) {
+  const secFetchSite = request.headers["sec-fetch-site"];
+
+  if (typeof secFetchSite === "string") {
+    return secFetchSite === "same-origin" || secFetchSite === "none";
+  }
+
+  const origin = request.headers.origin;
+
+  if (!origin) {
+    return true;
+  }
+
+  return TRUSTED_API_ORIGINS.has(origin);
+}
+
+// SNS Read / SNS Update / Enrich Markdown / Import Archive all concurrently walk, read,
+// rename, and delete the same Markdown vault via spawned child scripts (dedupe, validate,
+// import, enrich). Without this lock, running two of them at once (e.g. two buttons clicked
+// back-to-back) can let one pipeline delete/merge a file while another is mid-write on it,
+// silently discarding work.
+let activeVaultPipelineLabel: string | null = null;
+
+function tryBeginVaultPipeline(label: string): boolean {
+  if (activeVaultPipelineLabel) {
+    return false;
+  }
+
+  activeVaultPipelineLabel = label;
+  return true;
+}
+
+function endVaultPipeline() {
+  activeVaultPipelineLabel = null;
+}
+
 function parseEnv(content: string) {
   return Object.fromEntries(
     content
@@ -164,8 +207,26 @@ function runPowerShell(script: string) {
   });
 }
 
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+
 async function saveRequestBody(request: import("node:http").IncomingMessage, filePath: string) {
-  await pipeline(request, createWriteStream(filePath));
+  let received = 0;
+
+  await pipeline(
+    request,
+    async function* limitSize(source: AsyncIterable<Buffer>) {
+      for await (const chunk of source) {
+        received += chunk.length;
+
+        if (received > MAX_UPLOAD_BYTES) {
+          throw new Error(`Upload exceeds the ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB limit.`);
+        }
+
+        yield chunk;
+      }
+    },
+    createWriteStream(filePath)
+  );
 }
 
 function sanitizeUploadName(value: string) {
@@ -285,6 +346,12 @@ function isPathInside(childPath: string, parentPath: string) {
   return child === parent || child.startsWith(`${parent}${path.sep}`);
 }
 
+function isFilesystemRoot(folderPath: string) {
+  const resolved = path.resolve(folderPath);
+
+  return path.parse(resolved).root === resolved;
+}
+
 async function walkMarkdownFiles(root: string, files: string[] = []) {
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
 
@@ -380,6 +447,31 @@ let markdownCardsCache: { key: string; payload: MarkdownCardsPayload; createdAt:
 
 function invalidateMarkdownCardsCache() {
   markdownCardsCache = null;
+}
+
+// /api/media is requested once per rendered card image (potentially thousands in a burst on
+// the unfiltered "Total" view) and only needs the vault root path out of settings.json - reading
+// and re-parsing the whole file on every single request is wasted I/O. This short TTL cache
+// (plus explicit invalidation on settings writes) removes that per-request cost.
+const SETTINGS_CACHE_TTL_MS = 2000;
+let cachedSettingsSnapshot: { value: Record<string, any>; expiresAt: number } | null = null;
+
+async function readCachedSettings(settingsFilePath: string): Promise<Record<string, any>> {
+  const now = Date.now();
+
+  if (cachedSettingsSnapshot && cachedSettingsSnapshot.expiresAt > now) {
+    return cachedSettingsSnapshot.value;
+  }
+
+  const raw = await readFile(settingsFilePath, "utf8").catch(() => "");
+  const value = raw ? JSON.parse(raw) : {};
+
+  cachedSettingsSnapshot = { value, expiresAt: now + SETTINGS_CACHE_TTL_MS };
+  return value;
+}
+
+function invalidateSettingsCache() {
+  cachedSettingsSnapshot = null;
 }
 
 async function mapWithConcurrency<Input, Output>(
@@ -775,6 +867,18 @@ function filterCardsByRange(cards: Array<Record<string, any>>, range: PdfBookRan
       return (!range.from || dateIso >= range.from) && (!range.to || dateIso <= range.to);
     })
     .sort((left, right) => String(left.dateIso).localeCompare(String(right.dateIso)));
+}
+
+function filterCardsByPlatform(cards: Array<Record<string, any>>, settings: Record<string, any>) {
+  const selected = Array.isArray(settings.pdfPlatforms) ? settings.pdfPlatforms.filter(Boolean) : [];
+
+  if (selected.length === 0) {
+    return cards;
+  }
+
+  const allowed = new Set(selected.map((platform: string) => String(platform).toLowerCase()));
+
+  return cards.filter((card) => allowed.has(String(card.platform || "").toLowerCase()));
 }
 
 function pdfRangeFromPosts(posts: Array<Record<string, any>>) {
@@ -2954,6 +3058,12 @@ async function writePdfBook(
 
   doc.pipe(stream);
 
+  let rangeInfo: { start: number; count: number } = { start: 0, count: 0 };
+
+  // If anything below throws (bad image, unexpected field, etc.) after piping has already
+  // started, the partially-written file must not be left on disk looking like a finished book.
+  try {
+
   await ensureHighQualityPdfImages(posts);
 
   const platforms = topEntries(countBy(posts, (post) => String(post.platformLabel || post.platform || "SNS")), 12);
@@ -3165,7 +3275,7 @@ async function writePdfBook(
   addPdfPage(doc);
   const backCollagePagesUsed = drawImageCollagePage(doc, backCollageImages);
 
-  const rangeInfo = doc.bufferedPageRange();
+  rangeInfo = doc.bufferedPageRange();
   const frontCollageStart = rangeInfo.start + 1;
   const frontCollageEnd = frontCollageStart + frontCollagePagesUsed - 1;
   const backCollageEnd = rangeInfo.start + rangeInfo.count - 1;
@@ -3193,6 +3303,11 @@ async function writePdfBook(
 
   doc.end();
   await finished;
+  } catch (error) {
+    stream.destroy();
+    await rm(pdfPath, { force: true }).catch(() => {});
+    throw error;
+  }
 
   const book = {
     id: pdfPath,
@@ -3217,9 +3332,19 @@ async function writePdfBooks(settingsFilePath: string, requestSettings: Record<s
   const settings = {
     ...savedSettings,
     ...requestSettings,
+    // File-system roots must only ever come from the persisted settings file (set via the
+    // dedicated Settings screen / `/api/settings` PUT), never from this request body - otherwise
+    // a PDF-creation request could redirect where files get written/read on disk.
+    pdfOutputFolder: savedSettings.pdfOutputFolder,
+    obsidianRootFolder: savedSettings.obsidianRootFolder,
   };
   settings.pdfStyles = normalizePdfStylesForBook(savedSettings.pdfStyles, requestSettings.pdfStyles, settings);
-  const cardsPayload = await buildMarkdownCards(settingsFilePath);
+  // Build a fresh payload object rather than mutating the one buildMarkdownCards
+  // returns - on a cache hit/miss it can be (or share `cards` with) the shared
+  // markdown-cards cache, and other callers (like /api/markdown-cards) must
+  // keep seeing every platform regardless of this book's platform filter.
+  const rawCardsPayload = await buildMarkdownCards(settingsFilePath);
+  const cardsPayload = { ...rawCardsPayload, cards: filterCardsByPlatform(rawCardsPayload.cards, settings) };
 
   if (settings.pdfSplitMode === "year") {
     const ranges = parsePdfYearRanges(settings.pdfYear);
@@ -3834,6 +3959,11 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/markdown-card", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "DELETE") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
@@ -3876,8 +4006,7 @@ export default defineConfig(() => {
                 return;
               }
 
-              const rawSettings = await readFile(settingsFilePath, "utf8").catch(() => "");
-              const settings = rawSettings ? JSON.parse(rawSettings) : {};
+              const settings = await readCachedSettings(settingsFilePath);
               const root = path.resolve(settings.obsidianRootFolder || process.env.SNS_READER_OBSIDIAN_FOLDER || "data/sample-md");
               const url = new URL(request.url ?? "", "http://localhost");
               const filePath = path.resolve(url.searchParams.get("path") ?? "");
@@ -3947,6 +4076,11 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/create-pdf", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
@@ -3969,13 +4103,17 @@ export default defineConfig(() => {
           });
           server.middlewares.use("/api/pdf-file", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "GET" && request.method !== "DELETE") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
               }
 
-              const rawSettings = await readFile(settingsFilePath, "utf8").catch(() => "");
-              const settings = rawSettings ? JSON.parse(rawSettings) : {};
+              const settings = await readCachedSettings(settingsFilePath);
               const root = path.resolve(settings.pdfOutputFolder || path.join(process.cwd(), "exports", "pdf"));
               const url = new URL(request.url ?? "", "http://localhost");
               const filePath = path.resolve(url.searchParams.get("path") ?? "");
@@ -4005,6 +4143,11 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/settings", async (request, response) => {
             try {
+              if (request.method !== "GET" && !isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method === "GET") {
                 const raw = await readFile(settingsFilePath, "utf8").catch(() => null);
 
@@ -4016,9 +4159,19 @@ export default defineConfig(() => {
                 const body = await readRequestBody(request);
                 const parsed = JSON.parse(body);
 
+                for (const key of ["obsidianRootFolder", "pdfOutputFolder"]) {
+                  const value = parsed[key];
+
+                  if (typeof value === "string" && value && isFilesystemRoot(value)) {
+                    sendJson(response, 400, { error: `${key} cannot be a drive/filesystem root folder.` });
+                    return;
+                  }
+                }
+
                 await mkdir(path.dirname(settingsFilePath), { recursive: true });
                 await writeFile(settingsFilePath, JSON.stringify(parsed, null, 2), "utf8");
                 invalidateMarkdownCardsCache();
+                invalidateSettingsCache();
                 sendJson(response, 200, { ok: true });
                 return;
               }
@@ -4026,6 +4179,7 @@ export default defineConfig(() => {
               if (request.method === "DELETE") {
                 await rm(settingsFilePath, { force: true });
                 invalidateMarkdownCardsCache();
+                invalidateSettingsCache();
                 sendJson(response, 200, { ok: true });
                 return;
               }
@@ -4063,6 +4217,11 @@ export default defineConfig(() => {
             ]);
 
             try {
+              if (request.method !== "GET" && !isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method === "GET") {
                 const raw = await readFile(envPath, "utf8").catch(() => "");
                 const env = parseEnv(raw);
@@ -4106,6 +4265,11 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/server/restart", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
@@ -4122,8 +4286,14 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/import-archive", async (request, response) => {
             let tempRoot = "";
+            let pipelineStarted = false;
 
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
@@ -4139,6 +4309,12 @@ export default defineConfig(() => {
                 sendJson(response, 400, { error: "This SNS provider is not connected to archive import yet." });
                 return;
               }
+
+              if (!tryBeginVaultPipeline("Import Archive")) {
+                sendJson(response, 409, { error: `${activeVaultPipelineLabel} 작업이 진행 중입니다. 완료 후 다시 시도해주세요.` });
+                return;
+              }
+              pipelineStarted = true;
 
               tempRoot = await mkdtemp(path.join(os.tmpdir(), "sns-reader-archive-upload-"));
               const zipPath = path.join(tempRoot, fileName);
@@ -4196,6 +4372,9 @@ export default defineConfig(() => {
             } catch (error) {
               sendJson(response, 500, { error: error instanceof Error ? error.message : "Archive import failed." });
             } finally {
+              if (pipelineStarted) {
+                endVaultPipeline();
+              }
               if (tempRoot) {
               await rm(tempRoot, { recursive: true, force: true });
               }
@@ -4204,21 +4383,35 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/enrich-markdown", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
               }
 
-              const url = new URL(request.url ?? "", "http://localhost");
-              const result = await runMarkdownEnrichment(settingsFilePath, {
-                dateFrom: url.searchParams.get("dateFrom") || "",
-                dateTo: url.searchParams.get("dateTo") || "",
-                limit: url.searchParams.get("limit") || "",
-                platform: url.searchParams.get("platform") || "all",
-                year: url.searchParams.get("year") || ""
-              });
-              invalidateMarkdownCardsCache();
-              sendJson(response, 200, result);
+              if (!tryBeginVaultPipeline("Enrich Markdown")) {
+                sendJson(response, 409, { error: `${activeVaultPipelineLabel} 작업이 진행 중입니다. 완료 후 다시 시도해주세요.` });
+                return;
+              }
+
+              try {
+                const url = new URL(request.url ?? "", "http://localhost");
+                const result = await runMarkdownEnrichment(settingsFilePath, {
+                  dateFrom: url.searchParams.get("dateFrom") || "",
+                  dateTo: url.searchParams.get("dateTo") || "",
+                  limit: url.searchParams.get("limit") || "",
+                  platform: url.searchParams.get("platform") || "all",
+                  year: url.searchParams.get("year") || ""
+                });
+                invalidateMarkdownCardsCache();
+                sendJson(response, 200, result);
+              } finally {
+                endVaultPipeline();
+              }
             } catch (error) {
               sendJson(response, 500, { error: error instanceof Error ? error.message : "Markdown enrichment failed." });
             }
@@ -4226,6 +4419,11 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/login-browser", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
@@ -4243,14 +4441,28 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/sns-update", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
               }
 
-              const result = await runSnsUpdatePipeline(settingsFilePath);
-              invalidateMarkdownCardsCache();
-              sendJson(response, 200, result);
+              if (!tryBeginVaultPipeline("SNS Update")) {
+                sendJson(response, 409, { error: `${activeVaultPipelineLabel} 작업이 진행 중입니다. 완료 후 다시 시도해주세요.` });
+                return;
+              }
+
+              try {
+                const result = await runSnsUpdatePipeline(settingsFilePath);
+                invalidateMarkdownCardsCache();
+                sendJson(response, 200, result);
+              } finally {
+                endVaultPipeline();
+              }
             } catch (error) {
               sendJson(response, 500, { error: error instanceof Error ? error.message : "SNS Update failed." });
             }
@@ -4258,14 +4470,28 @@ export default defineConfig(() => {
 
           server.middlewares.use("/api/sns-read", async (request, response) => {
             try {
+              if (!isTrustedApiRequest(request)) {
+                sendJson(response, 403, { error: "Cross-origin request blocked." });
+                return;
+              }
+
               if (request.method !== "POST") {
                 sendJson(response, 405, { error: "Method not allowed" });
                 return;
               }
 
-              const result = await runSnsReadPipeline(settingsFilePath);
-              invalidateMarkdownCardsCache();
-              sendJson(response, 200, result);
+              if (!tryBeginVaultPipeline("SNS Read")) {
+                sendJson(response, 409, { error: `${activeVaultPipelineLabel} 작업이 진행 중입니다. 완료 후 다시 시도해주세요.` });
+                return;
+              }
+
+              try {
+                const result = await runSnsReadPipeline(settingsFilePath);
+                invalidateMarkdownCardsCache();
+                sendJson(response, 200, result);
+              } finally {
+                endVaultPipeline();
+              }
             } catch (error) {
               sendJson(response, 500, { error: error instanceof Error ? error.message : "SNS Read failed." });
             }

@@ -392,9 +392,27 @@ async function discoverPosts(extractRoot) {
   return posts.sort((a, b) => a.date.getTime() - b.date.getTime());
 }
 
+function normalizePathForCompare(filePath) {
+  return path.resolve(filePath).toLowerCase();
+}
+
+function isPathInside(childPath, parentPath) {
+  const child = normalizePathForCompare(childPath);
+  const parent = normalizePathForCompare(parentPath);
+
+  return child === parent || child.startsWith(`${parent}${path.sep}`);
+}
+
 function resolveExportPath(extractRoot, relativePath) {
   const normalized = relativePath.replaceAll("/", path.sep).replaceAll("\\", path.sep);
-  const direct = path.join(extractRoot, normalized);
+  const direct = path.resolve(extractRoot, normalized);
+
+  // relativePath comes from the archive's own JSON (media uri fields), which is untrusted
+  // input - without this check a crafted "../.." uri could copy an arbitrary local file
+  // (outside the extracted archive) into the Obsidian vault.
+  if (!isPathInside(direct, extractRoot)) {
+    return "";
+  }
 
   if (existsSync(direct)) {
     return direct;

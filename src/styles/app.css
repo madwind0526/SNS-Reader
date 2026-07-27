@@ -14,6 +14,53 @@
   box-sizing: border-box;
 }
 
+.app-error-boundary {
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+  max-width: 640px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 48px 24px;
+  align-content: center;
+}
+
+.app-error-boundary h1 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.app-error-boundary pre {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid rgba(32, 33, 36, 0.14);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 12px;
+  color: #ba3030;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+.app-error-boundary button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 8px;
+  background: #1f6f68;
+  color: #ffffff;
+  padding: 0 18px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-error-boundary pre {
+    border-color: rgba(243, 241, 234, 0.16);
+    background: rgba(255, 255, 255, 0.06);
+    color: #e07a7a;
+  }
+}
+
 html,
 body,
 #root {
