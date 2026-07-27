@@ -1790,6 +1790,14 @@ function TopToolbar({
   );
 }
 
+// .post-card has a fixed height (see app.css) and .post-card-grid is a fixed 2-column grid
+// above the app's 920px mobile breakpoint (the Electron window's own minWidth is 960, so in
+// practice it is always 2 columns) - that lets us window by row without measuring anything,
+// using top/bottom spacer rows to keep the scrollbar size and every card's position correct.
+const POST_CARD_ROW_HEIGHT = 250 + 14;
+const POST_CARD_GRID_MOBILE_BREAKPOINT = 920;
+const POST_CARD_ROW_OVERSCAN = 3;
+
 function ConvertedFileLibrary({
   onDeletePost,
   posts,
@@ -1799,10 +1807,53 @@ function ConvertedFileLibrary({
   posts: ConvertedPost[];
   onOpenPost: (post: ConvertedPost) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [viewport, setViewport] = useState({ scrollTop: 0, clientHeight: 0, columnCount: 2 });
+
+  useEffect(() => {
+    const node = scrollRef.current;
+
+    if (!node) {
+      return;
+    }
+
+    const updateViewport = () => {
+      setViewport({
+        scrollTop: node.scrollTop,
+        clientHeight: node.clientHeight,
+        columnCount: node.clientWidth <= POST_CARD_GRID_MOBILE_BREAKPOINT ? 1 : 2
+      });
+    };
+
+    updateViewport();
+    node.addEventListener("scroll", updateViewport, { passive: true });
+    const resizeObserver = new ResizeObserver(updateViewport);
+    resizeObserver.observe(node);
+
+    return () => {
+      node.removeEventListener("scroll", updateViewport);
+      resizeObserver.disconnect();
+    };
+  }, []);
+
+  const { columnCount, scrollTop, clientHeight } = viewport;
+  const totalRows = Math.ceil(posts.length / columnCount);
+  const firstVisibleRow = Math.max(0, Math.floor(scrollTop / POST_CARD_ROW_HEIGHT) - POST_CARD_ROW_OVERSCAN);
+  const lastVisibleRow = Math.min(
+    totalRows,
+    Math.ceil((scrollTop + clientHeight) / POST_CARD_ROW_HEIGHT) + POST_CARD_ROW_OVERSCAN
+  );
+  const startIndex = firstVisibleRow * columnCount;
+  const endIndex = Math.min(posts.length, lastVisibleRow * columnCount);
+  const windowedPosts = posts.slice(startIndex, endIndex);
+  const topSpacerHeight = firstVisibleRow * POST_CARD_ROW_HEIGHT;
+  const bottomSpacerHeight = Math.max(0, (totalRows - lastVisibleRow) * POST_CARD_ROW_HEIGHT);
+
   return (
     <section className="library-section">
-      <div className="post-card-grid">
-        {posts.map((post) => (
+      <div className="post-card-grid" ref={scrollRef}>
+        {topSpacerHeight > 0 && <div className="post-card-grid-spacer" style={{ height: topSpacerHeight }} />}
+        {windowedPosts.map((post) => (
           <article
             className={`post-card platform-${post.platform}`}
             key={post.id}
@@ -1846,6 +1897,7 @@ function ConvertedFileLibrary({
             </div>
           </article>
         ))}
+        {bottomSpacerHeight > 0 && <div className="post-card-grid-spacer" style={{ height: bottomSpacerHeight }} />}
       </div>
 
       {posts.length === 0 && (

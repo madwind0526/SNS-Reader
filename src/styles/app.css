@@ -449,6 +449,10 @@ p {
   align-content: start;
 }
 
+.post-card-grid-spacer {
+  grid-column: 1 / -1;
+}
+
 .post-card {
   --platform-accent: #1f6f68;
   --platform-accent-soft: rgba(31, 111, 104, 0.2);
