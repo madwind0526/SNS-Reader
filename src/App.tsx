@@ -29,7 +29,7 @@ import {
   Youtube
 } from "lucide-react";
 import type { CSSProperties, Dispatch, ReactNode, SetStateAction } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultSettings, fieldLabels, pdfStyleLabels, platformLabels } from "./settings/defaults";
 import { getAvailableLlmProviders, getPreferredLlmProvider } from "./settings/llm";
 import { clearSettings, loadSettings, loadSettingsFile, saveSettings } from "./settings/storage";
@@ -557,6 +557,7 @@ const INTRO_SCREEN_DURATION_MS = 2200;
 
 export function App() {
   const [showIntro, setShowIntro] = useState(true);
+  const hideIntro = useCallback(() => setShowIntro(false), []);
   const [view, setView] = useState<ViewMode>("sns-read");
   const [activeAccount, setActiveAccount] = useState<AccountFilter>("total");
   const [query, setQuery] = useState("");
@@ -777,16 +778,6 @@ export function App() {
     await refreshLlmEnvStatus();
     setSystemMessage(`${savedProviderLabel} \uC124\uC815\uC744 .env\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
   };
-
-  useEffect(() => {
-    if (!showIntro) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => setShowIntro(false), INTRO_SCREEN_DURATION_MS);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [showIntro]);
 
   useEffect(() => {
     let mounted = true;
@@ -1368,7 +1359,7 @@ export function App() {
 
   return (
     <main className={`app-shell ${settings.theme}`}>
-      {showIntro && <IntroScreen />}
+      {showIntro && <IntroScreen onFinished={hideIntro} />}
 
       <TopToolbar
         query={query}
@@ -1742,10 +1733,31 @@ function PlatformSidebar({
   );
 }
 
-function IntroScreen() {
+type IntroPhase = "video" | "logo";
+
+function IntroScreen({ onFinished }: { onFinished: () => void }) {
+  // /Intro.mp4 plays first (its own natural length, via onEnded); once it ends (or fails to
+  // load at all) the logo image fades in from low to full opacity and holds briefly before the
+  // whole screen is dismissed.
+  const [phase, setPhase] = useState<IntroPhase>("video");
+  const showLogo = useCallback(() => setPhase("logo"), []);
+
+  useEffect(() => {
+    if (phase !== "logo") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(onFinished, INTRO_SCREEN_DURATION_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [phase, onFinished]);
+
   return (
     <div className="intro-screen" role="presentation">
-      <img alt="SNS Reader" src="/Cover-Wide2.png" />
+      {phase === "video" && (
+        <video autoPlay muted onEnded={showLogo} onError={showLogo} playsInline src="/Intro.mp4" />
+      )}
+      {phase === "logo" && <img alt="SNS Reader" className="intro-logo" onError={onFinished} src="/Intro.png" />}
     </div>
   );
 }
