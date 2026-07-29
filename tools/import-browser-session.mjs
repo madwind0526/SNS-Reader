@@ -222,85 +222,12 @@ function sleep(ms) {
   });
 }
 
-function extractHandleFromUrl(value) {
-  const text = String(value ?? "").trim();
-  const match =
-    text.match(/@([A-Za-z0-9._-]+)/) ||
-    text.match(/(?:facebook\.com|instagram\.com|threads\.(?:net|com))\/([^/?#]+)/i);
-
-  return match?.[1]?.replace(/^@/, "").toLowerCase() ?? "";
-}
-
 function normalizeLines(value) {
   return String(value || "")
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-}
-
-function cleanPostLines(lines, handle) {
-  const lowerHandle = handle.toLowerCase();
-
-  return lines.filter((line) => {
-    const lower = line.toLowerCase();
-
-    if (lower === lowerHandle) return false;
-    if (parseKoreanTimestamp(line) !== null) return false;
-    if (/^\d+\s*\/\s*\d+$/.test(line)) return false;
-    if (/^(좋아요|답글|리포스트|공유|보기|번역 보기|댓글 달기|팔로우)$/i.test(line)) return false;
-
-    return true;
-  });
-}
-
-function extractThreadsBlocks(text, account, limit) {
-  const handle = extractHandleFromUrl(account?.url) || String(account?.label || "").toLowerCase();
-  const lines = normalizeLines(text);
-  const blocks = [];
-
-  for (let index = 0; index < lines.length - 2; index += 1) {
-    if (handle && lines[index].toLowerCase() !== handle) {
-      continue;
-    }
-
-    // Threads shows relative time ("1시간", "3일") for anything posted recently and only
-    // switches to an absolute date later, so both forms have to be accepted here.
-    const timestamp = parseKoreanTimestamp(lines[index + 1]);
-
-    if (!timestamp) {
-      continue;
-    }
-
-    let end = index + 2;
-
-    while (end < lines.length) {
-      const nextStartsBlock =
-        handle &&
-        lines[end].toLowerCase() === handle &&
-        parseKoreanTimestamp(lines[end + 1] || "") !== null;
-
-      if (nextStartsBlock) {
-        break;
-      }
-
-      end += 1;
-    }
-
-    const postLines = cleanPostLines(lines.slice(index, end), handle);
-    const body = postLines.join("\n").trim();
-
-    if (body) {
-      blocks.push({
-        date: formatDateParts(timestamp).date,
-        body,
-      });
-    }
-
-    index = end - 1;
-  }
-
-  return mergeThreadsContinuations(blocks).slice(0, limit);
 }
 
 const RELATIVE_KOREAN_TIME_UNIT_MS = {
@@ -391,11 +318,11 @@ function cleanFacebookLines(lines) {
   return bodyLines.filter(Boolean);
 }
 
-function extractFacebookArticles(articleTexts, limit) {
+function extractFacebookArticles(articles, limit) {
   const posts = [];
 
-  for (const articleText of articleTexts) {
-    const lines = normalizeLines(articleText);
+  for (const article of articles) {
+    const lines = normalizeLines(article.text);
     const authorIndex = lines.findIndex((line) => line === "미친바람");
     const dateIndex = lines.findIndex((line) => parseKoreanTimestamp(line) !== null);
 
@@ -414,6 +341,7 @@ function extractFacebookArticles(articleTexts, limit) {
     posts.push({
       date: formatDateParts(date).date,
       body,
+      permalink: article.permalink || "",
     });
 
     if (posts.length >= limit) {
@@ -424,55 +352,10 @@ function extractFacebookArticles(articleTexts, limit) {
   return posts;
 }
 
-function mergeThreadsContinuations(blocks) {
-  const merged = [];
-
-  for (const block of blocks) {
-    const firstLine = block.body.split(/\n/).find(Boolean) || "";
-    const continuationMatch = firstLine.match(/^(\d+)\.\s+/);
-    const previous = merged.at(-1);
-
-    if (previous && previous.date === block.date && continuationMatch) {
-      previous.body = `${previous.body}\n\n${block.body}`.trim();
-      continue;
-    }
-
-    merged.push({ ...block });
-  }
-
-  return merged;
-}
-
-function extractGenericBlocks(text, account, limit) {
-  const handle = extractHandleFromUrl(account?.url);
-  const lines = normalizeLines(text);
-  const startIndex = handle ? lines.findIndex((line) => line.toLowerCase() === handle) : -1;
-  const bodyLines = lines
-    .slice(Math.max(0, startIndex + 1))
-    .filter((line) => !/^(홈|검색|탐색|알림|메시지|프로필|더 보기|로그인|가입하기)$/i.test(line))
-    .slice(0, 80);
-  const body = bodyLines.join("\n").trim();
-
-  return body
-    ? [
-        {
-          date: new Date().toISOString().slice(0, 10),
-          body,
-        },
-      ].slice(0, limit)
-    : [];
-}
-
-function extractPosts({ platform, text, articleTexts = [], account, limit }) {
-  if (platform === "facebook") {
-    return extractFacebookArticles(articleTexts, limit);
-  }
-
-  if (platform === "threads") {
-    return extractThreadsBlocks(text, account, limit);
-  }
-
-  return extractGenericBlocks(text, account, limit);
+// This is only ever called for Facebook now - Instagram/Threads both moved to dedicated
+// per-post-permalink capture functions (captureInstagramPosts / captureThreadsPosts).
+function extractPosts({ platform, articles = [], limit }) {
+  return platform === "facebook" ? extractFacebookArticles(articles, limit) : [];
 }
 
 async function captureBrowserPage(client, sessionId, platform, limit) {
@@ -497,6 +380,11 @@ async function captureBrowserPage(client, sessionId, platform, limit) {
           }
         }
 
+        function articlePermalink(article) {
+          const link = Array.from(article.querySelectorAll('a[href*="/posts/"], a[href*="/videos/"], a[href*="story_fbid"], a[href*="/reel/"]'))[0];
+          return link ? link.href : '';
+        }
+
         async function run() {
           window.scrollTo(0, 0);
           await new Promise((innerResolve) => setTimeout(innerResolve, 1200));
@@ -514,7 +402,10 @@ async function captureBrowserPage(client, sessionId, platform, limit) {
 
           resolve({
             text: document.body ? document.body.innerText : '',
-            articleTexts: visibleArticles().map((node) => node.innerText || '').filter(Boolean).slice(0, ${Number(limit) + 2}),
+            articles: visibleArticles()
+              .map((node) => ({ text: node.innerText || '', permalink: articlePermalink(node) }))
+              .filter((article) => article.text)
+              .slice(0, ${Number(limit) + 2}),
           });
         }
 
@@ -528,7 +419,7 @@ async function captureBrowserPage(client, sessionId, platform, limit) {
 
   return {
     text,
-    articleTexts: [],
+    articles: [],
   };
 }
 
@@ -560,6 +451,14 @@ async function capturePlaywrightPage({ env, args, platform, url, limit }) {
             }
           }
 
+          function articlePermalink(article) {
+            const link = article.querySelector(
+              'a[href*="/posts/"], a[href*="/videos/"], a[href*="story_fbid"], a[href*="/reel/"]'
+            );
+
+            return link ? link.href : "";
+          }
+
           window.scrollTo(0, 0);
           await new Promise((resolve) => setTimeout(resolve, 1200));
           clickMore(visibleArticles());
@@ -574,9 +473,9 @@ async function capturePlaywrightPage({ env, args, platform, url, limit }) {
 
           return {
             text: document.body ? document.body.innerText : "",
-            articleTexts: visibleArticles()
-              .map((node) => node.innerText || "")
-              .filter(Boolean)
+            articles: visibleArticles()
+              .map((node) => ({ text: node.innerText || "", permalink: articlePermalink(node) }))
+              .filter((article) => article.text)
               .slice(0, postLimit + 2),
           };
         },
@@ -588,11 +487,61 @@ async function capturePlaywrightPage({ env, args, platform, url, limit }) {
 
     return {
       text,
-      articleTexts: [],
+      articles: [],
     };
   } finally {
     await context.close();
   }
+}
+
+function extensionFromUrl(url) {
+  try {
+    const extension = path.extname(new URL(url).pathname).toLowerCase();
+
+    return extension && extension.length <= 6 ? extension : ".jpg";
+  } catch {
+    return ".jpg";
+  }
+}
+
+// Instagram/Threads/Facebook all serve real post photos from the same CDN photo bucket
+// ("/t51.82787-15/"), while profile pictures - used as the og:image fallback on text-only posts
+// with no real photo - come from a different bucket ("/t51.82787-19/"). Requiring the former
+// (rather than just excluding the latter) avoids also picking up unrelated small thumbnails
+// (suggested posts, reaction avatars) that show up elsewhere on these pages.
+function isRealContentImageUrl(url) {
+  return typeof url === "string" && url.includes("/t51.82787-15/");
+}
+
+// These CDN URLs are meant to be fetched by link-preview crawlers (Facebook's own bot, Slack,
+// etc.) with no login, so a plain fetch works - no need to keep the Playwright browser context
+// (and its cookies) alive just to download images after the capture pass has already finished.
+async function downloadPostImages(imageUrls, mediaDir) {
+  await mkdir(mediaDir, { recursive: true });
+
+  const copied = [];
+  let index = 0;
+
+  for (const imageUrl of imageUrls) {
+    index += 1;
+
+    try {
+      const response = await fetch(imageUrl, { headers: { "User-Agent": "Mozilla/5.0 SNS-Reader/0.1" } });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const fileName = `image-${String(index).padStart(3, "0")}${extensionFromUrl(imageUrl)}`;
+
+      await writeFile(path.join(mediaDir, fileName), Buffer.from(await response.arrayBuffer()));
+      copied.push(fileName);
+    } catch (error) {
+      console.warn(`Skipping image after fetch error: ${imageUrl}`);
+    }
+  }
+
+  return copied;
 }
 
 // Instagram's profile grid renders only thumbnail images - post captions don't exist anywhere
@@ -635,6 +584,7 @@ async function captureInstagramPosts({ env, args, url, limit }) {
 
         const data = await page.evaluate(() => ({
           ogTitle: document.querySelector('meta[property="og:title"]')?.getAttribute("content") || "",
+          ogImage: document.querySelector('meta[property="og:image"]')?.getAttribute("content") || "",
           datetime: document.querySelector("time")?.getAttribute("datetime") || "",
         }));
 
@@ -652,10 +602,77 @@ async function captureInstagramPosts({ env, args, url, limit }) {
           body,
           sourceUrl: postUrl,
           postId: shortcode ? `instagram_${shortcode}` : "",
+          imageUrls: isRealContentImageUrl(data.ogImage) ? [data.ogImage] : [],
         });
       } catch (error) {
         console.warn(
           `Instagram post capture failed for ${postUrl}: ${error instanceof Error ? error.message : "unknown error"}`
+        );
+      }
+    }
+
+    return posts;
+  } finally {
+    await context.close();
+  }
+}
+
+// Threads has the same problem as Instagram, but a cleaner fix is available: its post permalinks
+// ("/@handle/post/{id}") are collectible from the profile feed the same way, and its individual
+// post pages expose the caption directly via og:description (no prefix to strip, unlike
+// Instagram's og:title) plus the same og:image/<time> pair - so this replaces the old raw-text
+// line-scanning extractor (extractThreadsBlocks) entirely for the primary capture path.
+async function collectThreadsPostUrls(page, limit) {
+  const hrefs = await page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll('a[href*="/post/"]'));
+
+    return [...new Set(anchors.map((anchor) => anchor.getAttribute("href")).filter(Boolean))];
+  });
+
+  return hrefs.slice(0, limit).map((href) => new URL(href, "https://www.threads.com").toString());
+}
+
+async function captureThreadsPosts({ env, args, url, limit }) {
+  const { context } = await launchPersistentBrowser({ env, args, headless: Boolean(args.headless) });
+  const page = context.pages()[0] ?? (await context.newPage());
+
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(1500);
+
+    const postUrls = await collectThreadsPostUrls(page, limit);
+    const posts = [];
+
+    for (const postUrl of postUrls) {
+      try {
+        await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+        await page.waitForTimeout(1200);
+
+        const data = await page.evaluate(() => ({
+          ogDescription: document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "",
+          ogImage: document.querySelector('meta[property="og:image"]')?.getAttribute("content") || "",
+          datetime: document.querySelector("time")?.getAttribute("datetime") || "",
+        }));
+
+        const body = data.ogDescription.trim();
+        const date = data.datetime ? new Date(data.datetime) : null;
+
+        if (!body || !date || !Number.isFinite(date.getTime())) {
+          continue;
+        }
+
+        const postCode = postUrl.match(/\/post\/([^/?#]+)/)?.[1] || "";
+
+        posts.push({
+          date: formatDateParts(date).date,
+          body,
+          sourceUrl: postUrl,
+          postId: postCode ? `threads_${postCode}` : "",
+          imageUrls: isRealContentImageUrl(data.ogImage) ? [data.ogImage] : [],
+        });
+      } catch (error) {
+        console.warn(
+          `Threads post capture failed for ${postUrl}: ${error instanceof Error ? error.message : "unknown error"}`
         );
       }
     }
@@ -731,7 +748,7 @@ async function readExistingPostEntries(root) {
   return entries;
 }
 
-function buildMarkdown({ platform, config, account, post }) {
+function buildMarkdown({ platform, config, account, post, copiedImages = [], mediaFolder = "" }) {
   const date = new Date(`${post.date}T00:00:00`);
   const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
   const parts = formatDateParts(safeDate);
@@ -740,7 +757,7 @@ function buildMarkdown({ platform, config, account, post }) {
   // if the caption text is later edited, so it dedupes correctly on re-runs; platforms without a
   // stable ID in scraped text (Facebook/Threads) fall back to a content hash.
   const postId = post.postId || `${platform}_browser_${parts.date}_${hashText(post.body)}`;
-  const sourceUrl = post.sourceUrl || account?.url || "";
+  const sourceUrl = post.sourceUrl || post.permalink || account?.url || "";
 
   return {
     postId,
@@ -758,15 +775,15 @@ function buildMarkdown({ platform, config, account, post }) {
       `year: ${parts.date.slice(0, 4)}`,
       `month: "${parts.month}"`,
       `title: "${escapeYaml(title)}"`,
-      "has_images: false",
-      "image_count: 0",
+      `has_images: ${copiedImages.length > 0}`,
+      `image_count: ${copiedImages.length}`,
       "has_comments: false",
       "comment_count: 0",
       "has_summary: false",
       "tags:",
       `  - ${config.label.replace(/\s+/g, "")}`,
       "  - SNS",
-      "media_folder: \"\"",
+      `media_folder: "${escapeYaml(mediaFolder)}"`,
       `imported_at: "${new Date().toISOString()}"`,
       `import_source: "${platform}-browser-session"`,
       "---",
@@ -783,7 +800,9 @@ function buildMarkdown({ platform, config, account, post }) {
       "",
       "## Images",
       "",
-      "No images captured.",
+      copiedImages.length
+        ? copiedImages.map((fileName) => `![[${mediaFolder}/${fileName}]]`).join("\n")
+        : "No images captured.",
       "",
       "## Videos",
       "",
@@ -850,6 +869,8 @@ async function main() {
       // Instagram has no usable text on the profile page itself (see captureInstagramPosts) -
       // it always needs its own per-post navigation, CDP fallback included.
       extractedPosts = (await captureInstagramPosts({ env, args, url, limit })).filter(sinceFilter);
+    } else if (platform === "threads") {
+      extractedPosts = (await captureThreadsPosts({ env, args, url, limit })).filter(sinceFilter);
     } else {
       let capture = null;
 
@@ -883,10 +904,17 @@ async function main() {
       extractedPosts = extractPosts({
         platform,
         text: capture.text,
-        articleTexts: capture.articleTexts,
+        articles: capture.articles,
         account,
         limit,
       }).filter(sinceFilter);
+      // Facebook posts do not get imageUrls populated: navigating directly to a post permalink
+      // renders Facebook's general feed around it (with unrelated suggested-content thumbnails)
+      // rather than a focused single-post view, so scraping the first content-bucket <img> there
+      // picks up a essentially random unrelated image, not the post's own photo. Unlike
+      // Instagram/Threads, Facebook's og:* meta tags are also empty for a logged-in session, so
+      // there is no reliable per-post image source here without a real UI to inspect the actual
+      // rendered post ourselves - left as a known gap rather than shipping wrong images.
     }
 
     if (extractedPosts.length === 0) {
@@ -900,8 +928,8 @@ async function main() {
     let refreshed = 0;
 
     for (const post of extractedPosts) {
-      const built = buildMarkdown({ platform, config, account, post });
-      const existingPath = existingPostEntries.get(built.postId);
+      const meta = buildMarkdown({ platform, config, account, post });
+      const existingPath = existingPostEntries.get(meta.postId);
 
       if (existingPath) {
         // --force is only set for the small "lookback" window at the front of an Update run
@@ -916,9 +944,21 @@ async function main() {
         refreshed += 1;
       }
 
-      const stem = `${built.parts.fileDate}_${platform}-browser_${slugify(post.body.slice(0, 36)) || built.postId}`;
-      const monthDir = path.join(outputRoot, config.outputFolder, built.parts.month);
+      const stem = `${meta.parts.fileDate}_${platform}-browser_${slugify(post.body.slice(0, 36)) || meta.postId}`;
+      const monthDir = path.join(outputRoot, config.outputFolder, meta.parts.month);
       const mdPath = path.join(monthDir, `${stem}.md`);
+      const mediaFolder = `assets/${stem}`;
+      const mediaDir = path.join(monthDir, "assets", stem);
+      const imageUrls = Array.isArray(post.imageUrls) ? post.imageUrls : [];
+      const copiedImages = imageUrls.length > 0 ? await downloadPostImages(imageUrls, mediaDir) : [];
+      const built = buildMarkdown({
+        platform,
+        config,
+        account,
+        post,
+        copiedImages,
+        mediaFolder: copiedImages.length > 0 ? mediaFolder : "",
+      });
 
       await mkdir(monthDir, { recursive: true });
       await writeFile(mdPath, built.markdown, "utf8");
