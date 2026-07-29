@@ -745,6 +745,13 @@ async function captureThreadsPosts({ env, args, url, limit }) {
           ogDescription: document.querySelector('meta[property="og:description"]')?.getAttribute("content") || "",
           ogImage: document.querySelector('meta[property="og:image"]')?.getAttribute("content") || "",
           datetime: document.querySelector("time")?.getAttribute("datetime") || "",
+          // Visiting one post's permalink renders the whole self-reply chain it belongs to (a
+          // long post split across the character limit, continued in the author's own replies) -
+          // every part's own /post/{id} link shows up somewhere on the page, which is what makes
+          // mergeThreadContinuations() below able to tell which captured posts belong together.
+          threadPostCodes: Array.from(document.querySelectorAll('a[href*="/post/"]'))
+            .map((anchor) => anchor.getAttribute("href")?.match(/\/post\/([^/?#]+)/)?.[1])
+            .filter(Boolean),
         }));
 
         const body = data.ogDescription.trim();
@@ -758,9 +765,12 @@ async function captureThreadsPosts({ env, args, url, limit }) {
 
         posts.push({
           date: formatDateParts(date).date,
+          exactDate: date,
           body,
           sourceUrl: postUrl,
           postId: postCode ? `threads_${postCode}` : "",
+          postCode,
+          threadPostCodes: [...new Set(data.threadPostCodes)],
           imageUrls: isRealContentImageUrl(data.ogImage) ? [data.ogImage] : [],
         });
       } catch (error) {
@@ -770,10 +780,59 @@ async function captureThreadsPosts({ env, args, url, limit }) {
       }
     }
 
-    return posts;
+    return mergeThreadContinuations(posts);
   } finally {
     await context.close();
   }
+}
+
+// Groups captured posts that share a thread (each part's page listed the others' /post/{id}
+// links - see the comment above), then collapses each group into a single post: earliest part
+// first, bodies joined in chronological order, images from every part combined. The earliest
+// part's own id/url/date become the merged post's identity, so re-running with --force replaces
+// the whole merged post as one unit rather than leaving its other parts as orphaned duplicates.
+function mergeThreadContinuations(posts) {
+  const byCode = new Map(posts.map((post) => [post.postCode, post]));
+  const visited = new Set();
+  const merged = [];
+
+  for (const post of posts) {
+    if (!post.postCode || visited.has(post.postCode)) {
+      continue;
+    }
+
+    const groupCodes = new Set([post.postCode]);
+    const queue = [post.postCode];
+
+    while (queue.length > 0) {
+      const code = queue.pop();
+      const current = byCode.get(code);
+
+      for (const siblingCode of current?.threadPostCodes ?? []) {
+        if (byCode.has(siblingCode) && !groupCodes.has(siblingCode)) {
+          groupCodes.add(siblingCode);
+          queue.push(siblingCode);
+        }
+      }
+    }
+
+    groupCodes.forEach((code) => visited.add(code));
+
+    const parts = [...groupCodes]
+      .map((code) => byCode.get(code))
+      .sort((left, right) => left.exactDate.getTime() - right.exactDate.getTime());
+    const root = parts[0];
+
+    merged.push({
+      date: root.date,
+      body: parts.map((part) => part.body).join("\n\n"),
+      sourceUrl: root.sourceUrl,
+      postId: root.postId,
+      imageUrls: parts.flatMap((part) => part.imageUrls),
+    });
+  }
+
+  return merged;
 }
 
 function formatDateParts(date) {
