@@ -553,7 +553,10 @@ function detectPlatformFromArchiveName(fileName: string): SnsPlatform | null {
   return null;
 }
 
+const INTRO_SCREEN_DURATION_MS = 2200;
+
 export function App() {
+  const [showIntro, setShowIntro] = useState(true);
   const [view, setView] = useState<ViewMode>("sns-read");
   const [activeAccount, setActiveAccount] = useState<AccountFilter>("total");
   const [query, setQuery] = useState("");
@@ -774,6 +777,16 @@ export function App() {
     await refreshLlmEnvStatus();
     setSystemMessage(`${savedProviderLabel} \uC124\uC815\uC744 .env\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
   };
+
+  useEffect(() => {
+    if (!showIntro) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setShowIntro(false), INTRO_SCREEN_DURATION_MS);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [showIntro]);
 
   useEffect(() => {
     let mounted = true;
@@ -1355,6 +1368,8 @@ export function App() {
 
   return (
     <main className={`app-shell ${settings.theme}`}>
+      {showIntro && <IntroScreen />}
+
       <TopToolbar
         query={query}
         view={view}
@@ -1362,6 +1377,7 @@ export function App() {
         onLoginBrowser={openLoginBrowser}
         onRestartServer={restartServer}
         onSnsRead={runSnsRead}
+        onTitleClick={() => setShowIntro(true)}
         onViewChange={openView}
         snsReadBusy={isSnsReading}
       />
@@ -1726,6 +1742,14 @@ function PlatformSidebar({
   );
 }
 
+function IntroScreen() {
+  return (
+    <div className="intro-screen" role="presentation">
+      <img alt="SNS Reader" src="/Cover-Wide2.png" />
+    </div>
+  );
+}
+
 function TopToolbar({
   query,
   view,
@@ -1733,6 +1757,7 @@ function TopToolbar({
   onQueryChange,
   onRestartServer,
   onSnsRead,
+  onTitleClick,
   onViewChange,
   snsReadBusy
 }: {
@@ -1742,15 +1767,16 @@ function TopToolbar({
   onQueryChange: (query: string) => void;
   onRestartServer: () => void;
   onSnsRead: () => void;
+  onTitleClick: () => void;
   onViewChange: (view: ViewMode, message: string) => void;
   snsReadBusy: boolean;
 }) {
   return (
     <header className="top-toolbar">
-      <div className="app-title">
+      <button className="app-title" onClick={onTitleClick} type="button">
         <strong>SNS Reader</strong>
         <span>{BUILD_VERSION}</span>
-      </div>
+      </button>
 
       <label className="toolbar-search">
         <Search size={18} />

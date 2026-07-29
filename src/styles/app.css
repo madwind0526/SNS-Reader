@@ -107,6 +107,43 @@ p {
   color: #f3f1ea;
 }
 
+.intro-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  background: #f6f7f4;
+  animation: intro-screen-fade 2.2s ease forwards;
+}
+
+.dark .intro-screen {
+  background: #171817;
+}
+
+.intro-screen img {
+  max-width: min(720px, 86vw);
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+}
+
+@keyframes intro-screen-fade {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 .platform-sidebar {
   grid-column: 1;
   grid-row: 2;
@@ -273,6 +310,21 @@ p {
   display: grid;
   gap: 2px;
   min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.app-title:hover strong {
+  color: #1f6f68;
+}
+
+.dark .app-title:hover strong {
+  color: #8ed8c8;
 }
 
 .app-title strong {

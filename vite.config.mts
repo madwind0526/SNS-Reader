@@ -4572,6 +4572,7 @@ export default defineConfig(() => {
         }
       }
     ],
+    publicDir: path.resolve(process.cwd(), "assets"),
     server: {
       host: "127.0.0.1",
       port: 5173
