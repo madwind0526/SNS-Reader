@@ -595,6 +595,77 @@ async function capturePlaywrightPage({ env, args, platform, url, limit }) {
   }
 }
 
+// Instagram's profile grid renders only thumbnail images - post captions don't exist anywhere
+// in the profile page's text at all, so scraping document.body.innerText (like the other
+// platforms) can never find real post content. Each individual post page does carry the caption
+// in a reliable, structured place though: the og:title meta tag ("Instagram의 {user}님 : "caption"")
+// and a <time datetime="ISO-8601"> element - both meant for link previews/SEO, so they're much
+// less likely to break on a UI redesign than scraping rendered DOM text would be.
+function parseInstagramCaption(ogTitle) {
+  const match = String(ogTitle || "").match(/:\s*"([\s\S]*)"$/);
+
+  return match ? match[1].trim() : "";
+}
+
+async function collectInstagramPostUrls(page, limit) {
+  const hrefs = await page.evaluate(() => {
+    const anchors = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
+
+    return [...new Set(anchors.map((anchor) => anchor.getAttribute("href")).filter(Boolean))];
+  });
+
+  return hrefs.slice(0, limit).map((href) => new URL(href, "https://www.instagram.com").toString());
+}
+
+async function captureInstagramPosts({ env, args, url, limit }) {
+  const { context } = await launchPersistentBrowser({ env, args, headless: Boolean(args.headless) });
+  const page = context.pages()[0] ?? (await context.newPage());
+
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(1500);
+
+    const postUrls = await collectInstagramPostUrls(page, limit);
+    const posts = [];
+
+    for (const postUrl of postUrls) {
+      try {
+        await page.goto(postUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+        await page.waitForTimeout(1200);
+
+        const data = await page.evaluate(() => ({
+          ogTitle: document.querySelector('meta[property="og:title"]')?.getAttribute("content") || "",
+          datetime: document.querySelector("time")?.getAttribute("datetime") || "",
+        }));
+
+        const body = parseInstagramCaption(data.ogTitle);
+        const date = data.datetime ? new Date(data.datetime) : null;
+
+        if (!body || !date || !Number.isFinite(date.getTime())) {
+          continue;
+        }
+
+        const shortcode = postUrl.match(/\/(?:p|reel)\/([^/?#]+)/)?.[1] || "";
+
+        posts.push({
+          date: formatDateParts(date).date,
+          body,
+          sourceUrl: postUrl,
+          postId: shortcode ? `instagram_${shortcode}` : "",
+        });
+      } catch (error) {
+        console.warn(
+          `Instagram post capture failed for ${postUrl}: ${error instanceof Error ? error.message : "unknown error"}`
+        );
+      }
+    }
+
+    return posts;
+  } finally {
+    await context.close();
+  }
+}
+
 function formatDateParts(date) {
   const pad = (value) => String(value).padStart(2, "0");
   const year = date.getFullYear();
@@ -665,7 +736,11 @@ function buildMarkdown({ platform, config, account, post }) {
   const safeDate = Number.isFinite(date.getTime()) ? date : new Date();
   const parts = formatDateParts(safeDate);
   const title = post.body.split(/\n+/).find(Boolean)?.slice(0, 80) || `Untitled ${config.label} Post`;
-  const postId = `${platform}_browser_${parts.date}_${hashText(post.body)}`;
+  // A permalink-derived shortcode (post.postId, e.g. Instagram's /p/{code}/) stays stable even
+  // if the caption text is later edited, so it dedupes correctly on re-runs; platforms without a
+  // stable ID in scraped text (Facebook/Threads) fall back to a content hash.
+  const postId = post.postId || `${platform}_browser_${parts.date}_${hashText(post.body)}`;
+  const sourceUrl = post.sourceUrl || account?.url || "";
 
   return {
     postId,
@@ -676,7 +751,7 @@ function buildMarkdown({ platform, config, account, post }) {
       `platform: ${platform}`,
       `account: "${escapeYaml(account?.label || config.label)}"`,
       `account_url: "${escapeYaml(account?.url || "")}"`,
-      `source_url: "${escapeYaml(account?.url || "")}"`,
+      `source_url: "${escapeYaml(sourceUrl)}"`,
       `post_id: "${escapeYaml(postId)}"`,
       `created: "${parts.dateTime}"`,
       `date: "${parts.date}"`,
@@ -724,7 +799,7 @@ function buildMarkdown({ platform, config, account, post }) {
       "",
       "## Source",
       "",
-      account?.url ? `[${config.label} profile](${account.url})` : `${config.label} browser session`,
+      sourceUrl ? `[${config.label} post](${sourceUrl})` : `${config.label} browser session`,
       "",
     ].join("\n"),
   };
@@ -758,42 +833,7 @@ async function main() {
   let captureSource = "playwright";
 
   try {
-    let capture = null;
-
-    if (cdpBaseUrl) {
-      try {
-        client = await connectToBrowser(cdpBaseUrl);
-        const page = await openBrowserPage(client, url);
-
-        await evaluate(
-          client,
-          page.sessionId,
-          "new Promise((resolve) => { window.scrollTo(0, 0); setTimeout(resolve, 1200); })",
-          true
-        );
-
-        capture = await captureBrowserPage(client, page.sessionId, platform, limit);
-        captureSource = "chrome-cdp";
-      } catch (error) {
-        console.warn(
-          `Chrome CDP capture failed, falling back to Playwright profile: ${
-            error instanceof Error ? error.message : "CDP connection failed"
-          }`
-        );
-      }
-    }
-
-    if (!capture) {
-      capture = await capturePlaywrightPage({ env, args, platform, url, limit });
-    }
-
-    const extractedPosts = extractPosts({
-      platform,
-      text: capture.text,
-      articleTexts: capture.articleTexts,
-      account,
-      limit,
-    }).filter((post) => {
+    const sinceFilter = (post) => {
       if (!since) {
         return true;
       }
@@ -801,7 +841,52 @@ async function main() {
       const date = new Date(`${post.date}T00:00:00`);
 
       return Number.isFinite(date.getTime()) && date >= since;
-    });
+    };
+
+    let extractedPosts;
+
+    if (platform === "instagram") {
+      // Instagram has no usable text on the profile page itself (see captureInstagramPosts) -
+      // it always needs its own per-post navigation, CDP fallback included.
+      extractedPosts = (await captureInstagramPosts({ env, args, url, limit })).filter(sinceFilter);
+    } else {
+      let capture = null;
+
+      if (cdpBaseUrl) {
+        try {
+          client = await connectToBrowser(cdpBaseUrl);
+          const page = await openBrowserPage(client, url);
+
+          await evaluate(
+            client,
+            page.sessionId,
+            "new Promise((resolve) => { window.scrollTo(0, 0); setTimeout(resolve, 1200); })",
+            true
+          );
+
+          capture = await captureBrowserPage(client, page.sessionId, platform, limit);
+          captureSource = "chrome-cdp";
+        } catch (error) {
+          console.warn(
+            `Chrome CDP capture failed, falling back to Playwright profile: ${
+              error instanceof Error ? error.message : "CDP connection failed"
+            }`
+          );
+        }
+      }
+
+      if (!capture) {
+        capture = await capturePlaywrightPage({ env, args, platform, url, limit });
+      }
+
+      extractedPosts = extractPosts({
+        platform,
+        text: capture.text,
+        articleTexts: capture.articleTexts,
+        account,
+        limit,
+      }).filter(sinceFilter);
+    }
 
     if (extractedPosts.length === 0) {
       console.log(`${config.label} browser page opened, but no safe post blocks were extracted.`);
