@@ -246,7 +246,7 @@ function cleanPostLines(lines, handle) {
     const lower = line.toLowerCase();
 
     if (lower === lowerHandle) return false;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(line)) return false;
+    if (parseKoreanTimestamp(line) !== null) return false;
     if (/^\d+\s*\/\s*\d+$/.test(line)) return false;
     if (/^(좋아요|답글|리포스트|공유|보기|번역 보기|댓글 달기|팔로우)$/i.test(line)) return false;
 
@@ -264,7 +264,11 @@ function extractThreadsBlocks(text, account, limit) {
       continue;
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(lines[index + 1])) {
+    // Threads shows relative time ("1시간", "3일") for anything posted recently and only
+    // switches to an absolute date later, so both forms have to be accepted here.
+    const timestamp = parseKoreanTimestamp(lines[index + 1]);
+
+    if (!timestamp) {
       continue;
     }
 
@@ -274,7 +278,7 @@ function extractThreadsBlocks(text, account, limit) {
       const nextStartsBlock =
         handle &&
         lines[end].toLowerCase() === handle &&
-        /^\d{4}-\d{2}-\d{2}$/.test(lines[end + 1] || "");
+        parseKoreanTimestamp(lines[end + 1] || "") !== null;
 
       if (nextStartsBlock) {
         break;
@@ -288,7 +292,7 @@ function extractThreadsBlocks(text, account, limit) {
 
     if (body) {
       blocks.push({
-        date: lines[index + 1],
+        date: formatDateParts(timestamp).date,
         body,
       });
     }
@@ -299,13 +303,44 @@ function extractThreadsBlocks(text, account, limit) {
   return mergeThreadsContinuations(blocks).slice(0, limit);
 }
 
-function parseFacebookDate(value) {
-  const text = String(value || "").trim();
-  const now = new Date();
-  const monthDay = text.match(/(\d{1,2})월\s*(\d{1,2})일(?:\s*(오전|오후)\s*(\d{1,2}):(\d{2}))?/);
+const RELATIVE_KOREAN_TIME_UNIT_MS = {
+  초: 1000,
+  분: 60 * 1000,
+  시간: 60 * 60 * 1000,
+  일: 24 * 60 * 60 * 1000,
+  주: 7 * 24 * 60 * 60 * 1000,
+  개월: 30 * 24 * 60 * 60 * 1000,
+  년: 365 * 24 * 60 * 60 * 1000,
+};
+
+// Facebook/Threads only show an absolute "N월 N일" date once a post is old enough - anything
+// posted within roughly the last day or two is rendered as relative time ("3시간", "1일" etc.),
+// which the absolute-only matcher below never recognized, so today's posts were silently
+// dropped entirely (not just mis-dated).
+function parseRelativeKoreanTimestamp(text, now) {
+  const trimmed = String(text || "").trim();
+
+  if (/^(방금|방금\s*전|지금)$/.test(trimmed)) {
+    return new Date(now);
+  }
+
+  const relative = trimmed.match(/^(\d+)\s*(초|분|시간|일|주|개월|년)\s*(전)?$/);
+
+  if (!relative) {
+    return null;
+  }
+
+  const unitMs = RELATIVE_KOREAN_TIME_UNIT_MS[relative[2]];
+
+  return new Date(now.getTime() - Number(relative[1]) * unitMs);
+}
+
+function parseAbsoluteKoreanTimestamp(text, now) {
+  const trimmed = String(text || "").trim();
+  const monthDay = trimmed.match(/(\d{1,2})월\s*(\d{1,2})일(?:\s*(오전|오후)\s*(\d{1,2}):(\d{2}))?/);
 
   if (!monthDay) {
-    return now;
+    return null;
   }
 
   const [, month, day, period, hourText, minuteText] = monthDay;
@@ -318,6 +353,12 @@ function parseFacebookDate(value) {
   }
 
   return new Date(now.getFullYear(), Number(month) - 1, Number(day), hour, Number(minuteText || 0), 0);
+}
+
+// Returns null (not a Date) when the line isn't a recognizable timestamp at all, so callers can
+// tell "this line is a timestamp" apart from "this line is ordinary post text".
+function parseKoreanTimestamp(text, now = new Date()) {
+  return parseRelativeKoreanTimestamp(text, now) ?? parseAbsoluteKoreanTimestamp(text, now);
 }
 
 function cleanFacebookLines(lines) {
@@ -356,7 +397,7 @@ function extractFacebookArticles(articleTexts, limit) {
   for (const articleText of articleTexts) {
     const lines = normalizeLines(articleText);
     const authorIndex = lines.findIndex((line) => line === "미친바람");
-    const dateIndex = lines.findIndex((line) => /월\s*\d{1,2}일/.test(line));
+    const dateIndex = lines.findIndex((line) => parseKoreanTimestamp(line) !== null);
 
     if (authorIndex < 0 || dateIndex < 0 || dateIndex <= authorIndex) {
       continue;
@@ -368,10 +409,10 @@ function extractFacebookArticles(articleTexts, limit) {
       continue;
     }
 
-    const date = parseFacebookDate(lines[dateIndex]);
+    const date = parseKoreanTimestamp(lines[dateIndex]) ?? new Date();
 
     posts.push({
-      date: date.toISOString().slice(0, 10),
+      date: formatDateParts(date).date,
       body,
     });
 
