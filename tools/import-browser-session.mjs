@@ -318,6 +318,28 @@ function cleanFacebookLines(lines) {
   return bodyLines.filter(Boolean);
 }
 
+// Facebook only ever shows relative time ("1일", "2일") in the feed, with no exact machine-
+// readable timestamp exposed anywhere in the DOM (unlike Instagram/Threads' <time datetime>) -
+// so the computed calendar date can drift by a day between two runs of the same post depending
+// on exactly when each run happens relative to Facebook's own relative-time rounding. Since the
+// default postId is date-derived, that drift alone used to produce duplicate files across runs.
+// The permalink's pfbid/story_fbid/video id segment is stable regardless of when it's read, so
+// it's used as the postId whenever a permalink was found, exactly like Instagram/Threads already
+// do with their own shortcodes.
+function facebookPostIdFromPermalink(permalink) {
+  if (!permalink) {
+    return "";
+  }
+
+  const match =
+    permalink.match(/\/posts\/([^/?#]+)/) ||
+    permalink.match(/\/videos\/([^/?#]+)/) ||
+    permalink.match(/\/reel\/([^/?#]+)/) ||
+    permalink.match(/[?&]story_fbid=([^&]+)/);
+
+  return match ? `facebook_${match[1]}` : "";
+}
+
 function extractFacebookArticles(articles, limit) {
   const posts = [];
 
@@ -342,6 +364,7 @@ function extractFacebookArticles(articles, limit) {
       date: formatDateParts(date).date,
       body,
       permalink: article.permalink || "",
+      postId: facebookPostIdFromPermalink(article.permalink || ""),
     });
 
     if (posts.length >= limit) {
@@ -504,18 +527,40 @@ export function extensionFromUrl(url) {
   }
 }
 
-// Instagram/Threads/Facebook all serve real post photos from the same CDN photo bucket
-// ("/t51.82787-15/"), while profile pictures - used as the og:image fallback on text-only posts
-// with no real photo - come from a different bucket ("/t51.82787-19/"). Requiring the former
-// (rather than just excluding the latter) avoids also picking up unrelated small thumbnails
-// (suggested posts, reaction avatars) that show up elsewhere on these pages.
+// Real post photos don't all come from one predictable CDN bucket - e.g. a Threads reel used
+// "t51.71878-15" instead of the usual "t51.82787-15", which a bucket allowlist wrongly rejected
+// as "not a real photo" even though it was one. Instagram/Threads tag every served image with a
+// base64-encoded "efg" query param describing its purpose (e.g. `{"efg_tag":"FEED.best_image_
+// urlgen.C3"}` for a real post photo vs `{"efg_tag":"profile_pic.django.180.c1"}` for the
+// og:image fallback shown on text-only posts) - reading that tag directly is far more reliable
+// than guessing which bucket IDs mean what.
 export function isRealContentImageUrl(url) {
-  return typeof url === "string" && url.includes("/t51.82787-15/");
+  if (typeof url !== "string" || !url) {
+    return false;
+  }
+
+  try {
+    const efg = new URL(url).searchParams.get("efg");
+
+    if (efg) {
+      return !Buffer.from(efg, "base64").toString("utf8").toLowerCase().includes("profile_pic");
+    }
+  } catch {
+    // Not a parseable URL or no efg param - fall through to the bucket-based fallback below.
+  }
+
+  return !url.includes("/t51.82787-19/");
 }
 
 // These CDN URLs are meant to be fetched by link-preview crawlers (Facebook's own bot, Slack,
 // etc.) with no login, so a plain fetch works - no need to keep the Playwright browser context
 // (and its cookies) alive just to download images after the capture pass has already finished.
+// One exception: Facebook's crawler-facing og:image sometimes points at
+// lookaside.fbsbx.com/lookaside/crawler/media/?media_id=... - a proxy endpoint that only returns
+// actual image bytes for the same crawler user-agent used to discover it; any other UA gets back
+// an HTML page that client-side-redirects a real browser to a photo viewer, not raw bytes. Reusing
+// that UA there (and verifying the response is actually image/* before saving, since silently
+// writing that redirect HTML into a ".jpg" file is worse than not downloading anything) fixes it.
 export async function downloadPostImages(imageUrls, mediaDir) {
   await mkdir(mediaDir, { recursive: true });
 
@@ -526,9 +571,13 @@ export async function downloadPostImages(imageUrls, mediaDir) {
     index += 1;
 
     try {
-      const response = await fetch(imageUrl, { headers: { "User-Agent": "Mozilla/5.0 SNS-Reader/0.1" } });
+      const isFacebookLookaside = /(?:^|\.)fbsbx\.com$/.test(new URL(imageUrl).hostname);
+      const userAgent = isFacebookLookaside
+        ? "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+        : "Mozilla/5.0 SNS-Reader/0.1";
+      const response = await fetch(imageUrl, { headers: { "User-Agent": userAgent } });
 
-      if (!response.ok) {
+      if (!response.ok || !(response.headers.get("content-type") || "").startsWith("image/")) {
         continue;
       }
 
