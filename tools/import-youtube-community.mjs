@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -424,9 +424,9 @@ async function walkMarkdownFiles(root, files = []) {
   return files;
 }
 
-async function readExistingPostIds(root) {
+async function readExistingPostEntries(root) {
   const files = await walkMarkdownFiles(root);
-  const ids = new Set();
+  const entries = new Map();
 
   for (const filePath of files) {
     const markdown = await readFile(filePath, "utf8").catch(() => "");
@@ -434,11 +434,11 @@ async function readExistingPostIds(root) {
     const postId = markdown.match(/^post_id:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
 
     if (platform === "youtube" && postId) {
-      ids.add(postId);
+      entries.set(postId, filePath);
     }
   }
 
-  return ids;
+  return entries;
 }
 
 function extractCommunityPosts(initialData) {
@@ -547,6 +547,7 @@ async function main() {
   const communityUrl = normalizeChannelUrl(args.url || account?.url);
   const latestDate = args.since ? new Date(`${args.since}T00:00:00`) : null;
   const limit = args.limit ? Number(args.limit) : 25;
+  const force = Boolean(args.force);
   const outputRoot = path.resolve(args.out || settings?.obsidianRootFolder || env.SNS_READER_OBSIDIAN_FOLDER || DEFAULT_MARKDOWN_ROOT);
 
   if (!communityUrl) {
@@ -599,13 +600,21 @@ async function main() {
     .filter((post) => !latestDate || post.date >= latestDate)
     .slice(0, limit);
   const written = [];
-  const existingPostIds = await readExistingPostIds(path.join(outputRoot, "YouTube"));
+  const existingPostEntries = await readExistingPostEntries(path.join(outputRoot, "YouTube"));
   let skippedDuplicates = 0;
+  let refreshed = 0;
 
   for (const post of posts.sort((left, right) => left.date.getTime() - right.date.getTime())) {
-    if (existingPostIds.has(post.id)) {
-      skippedDuplicates += 1;
-      continue;
+    const existingPath = existingPostEntries.get(post.id);
+
+    if (existingPath) {
+      if (!force) {
+        skippedDuplicates += 1;
+        continue;
+      }
+
+      await rm(existingPath, { force: true });
+      refreshed += 1;
     }
 
     const parts = formatDateParts(post.date);
@@ -615,7 +624,7 @@ async function main() {
 
     await mkdir(monthDir, { recursive: true });
     await writeFile(mdPath, buildMarkdown({ post, account }), "utf8");
-    existingPostIds.add(post.id);
+    existingPostEntries.set(post.id, mdPath);
     written.push(mdPath);
   }
 
@@ -623,6 +632,7 @@ async function main() {
   console.log(`Capture source: ${captureSource}`);
   console.log(`Discovered posts: ${posts.length}`);
   console.log(`Written Markdown files: ${written.length}`);
+  console.log(`Refreshed existing posts: ${refreshed}`);
   console.log(`Skipped duplicate posts: ${skippedDuplicates}`);
   written.forEach((filePath) => console.log(filePath));
 }

@@ -2951,6 +2951,22 @@ function SettingsView({
         <p className="hint">{storagePreview}</p>
       </Panel>
 
+      <Panel title="SNS Update" icon={<RefreshCw size={18} />}>
+        <label>
+          Update Lookback (days)
+          <input
+            max={30}
+            min={0}
+            onChange={(event) => updateSettings("snsUpdateLookbackDays", Number(event.target.value))}
+            type="number"
+            value={settings.snsUpdateLookbackDays}
+          />
+        </label>
+        <p className="hint">
+          SNS Update는 마지막으로 저장된 글의 날짜에서 이 일수만큼 앞선 날짜부터 다시 확인합니다. 그 범위 안에 있는 글은 이미 저장되어 있어도 수정 여부(이미지 추가 등)를 다시 확인해 갱신합니다. 그보다 오래된 글의 수정은 감지하지 않습니다.
+        </p>
+      </Panel>
+
     </section>
   );
 }

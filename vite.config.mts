@@ -3680,19 +3680,25 @@ function todayInputDate() {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+// `sinceDate` is already lookback-adjusted by the caller (a few days before the last known post,
+// not the last known post's date itself) so that a post edited after publish - e.g. an image
+// added to an existing blog entry - gets rediscovered. `allowForce` gates `--force`: only set
+// once there's a real prior latestDate to narrow around, so a first-ever import of an account
+// (nothing to refresh yet) doesn't pointlessly delete-and-rewrite everything it just wrote.
 function updateScriptForAccount(
   account: { platform?: string; url?: string; label?: string },
-  latestDate: string,
+  sinceDate: string,
+  allowForce: boolean,
   runtimeEnv: Record<string, string | undefined>
 ) {
-  const sinceDate = latestDate || "";
+  const forceArgs = allowForce && sinceDate ? ["--force"] : [];
 
   switch (account.platform) {
     case "naver-blog": {
       const args = account.url ? ["--url", account.url] : [];
 
       if (sinceDate) {
-        args.push("--date-from", sinceDate, "--date-to", todayInputDate(), "--limit", "200");
+        args.push("--date-from", sinceDate, "--date-to", todayInputDate(), "--limit", "200", ...forceArgs);
       } else {
         args.push("--limit", "20");
       }
@@ -3725,7 +3731,7 @@ function updateScriptForAccount(
       }
 
       if (sinceDate) {
-        args.push("--since", sinceDate);
+        args.push("--since", sinceDate, ...forceArgs);
       }
 
       return {
@@ -3742,7 +3748,7 @@ function updateScriptForAccount(
       }
 
       if (sinceDate) {
-        args.push("--since", sinceDate);
+        args.push("--since", sinceDate, ...forceArgs);
       }
 
       return {
@@ -3759,7 +3765,7 @@ function updateScriptForAccount(
       }
 
       if (sinceDate) {
-        args.push("--since", sinceDate);
+        args.push("--since", sinceDate, ...forceArgs);
       }
 
       return {
@@ -3776,7 +3782,7 @@ function updateScriptForAccount(
       }
 
       if (sinceDate) {
-        args.push("--since", sinceDate);
+        args.push("--since", sinceDate, ...forceArgs);
       }
 
       return {
@@ -3790,10 +3796,34 @@ function updateScriptForAccount(
   }
 }
 
+// Re-checking a post's own publish date can never catch a post that was edited later (e.g. an
+// image added to an old blog entry) without rescanning everything ever published. Instead,
+// Update rewinds `sinceDate` a few days before the last known post so recent posts get rechecked
+// (and refreshed via --force, see updateScriptForAccount) without re-scanning the full history.
+function computeSnsUpdateSinceDate(latestDate: string, lookbackDays: number) {
+  if (!latestDate) {
+    return "";
+  }
+
+  const parsed = new Date(`${latestDate}T00:00:00`);
+
+  if (!Number.isFinite(parsed.getTime())) {
+    return latestDate;
+  }
+
+  parsed.setDate(parsed.getDate() - Math.max(0, lookbackDays));
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
+}
+
 async function runSnsUpdatePipeline(settingsFilePath: string) {
   const rawSettings = await readFile(settingsFilePath, "utf8").catch(() => "");
   const settings = rawSettings ? JSON.parse(rawSettings) : {};
   const accounts = Array.isArray(settings.accounts) ? settings.accounts : [];
+  const lookbackDaysSetting = Number(settings.snsUpdateLookbackDays);
+  const lookbackDays = Number.isFinite(lookbackDaysSetting) ? Math.max(0, lookbackDaysSetting) : 3;
   const updatePlatforms = new Set(["facebook", "instagram", "threads", "youtube", "naver-blog"]);
   const enabledAccounts = accounts.filter(
     (account: { exportToObsidian?: boolean; platform?: string }) =>
@@ -3821,6 +3851,7 @@ async function runSnsUpdatePipeline(settingsFilePath: string) {
         .filter(Boolean)
         .sort()
         .at(-1) ?? "";
+    const sinceDate = computeSnsUpdateSinceDate(latestDate, lookbackDays);
 
     return {
       id: account.id ?? "",
@@ -3828,7 +3859,8 @@ async function runSnsUpdatePipeline(settingsFilePath: string) {
       platform: account.platform ?? "",
       url: account.url ?? "",
       latestDate,
-      nextFrom: latestDate || "first-import",
+      sinceDate,
+      nextFrom: sinceDate || "first-import",
       existingCards: accountCards.length
     };
   });
@@ -3846,7 +3878,7 @@ async function runSnsUpdatePipeline(settingsFilePath: string) {
   }> = [];
 
   for (const target of targets) {
-    const updateConfig = updateScriptForAccount(target, target.latestDate, runtimeEnv);
+    const updateConfig = updateScriptForAccount(target, target.sinceDate, Boolean(target.latestDate), runtimeEnv);
 
     if (!updateConfig) {
       warnings.push(`${target.label}: Update connector가 아직 없습니다.`);

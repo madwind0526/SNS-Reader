@@ -102,5 +102,6 @@ export interface AppSettings {
   selectedLlmProvider: LlmProviderId;
   maxTags: number;
   summaryLines: number;
+  snsUpdateLookbackDays: number;
   accounts: SnsAccountConfig[];
 }

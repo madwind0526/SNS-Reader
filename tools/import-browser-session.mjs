@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -715,20 +715,20 @@ async function walkMarkdownFiles(root, files = []) {
   return files;
 }
 
-async function readExistingPostIds(root) {
+async function readExistingPostEntries(root) {
   const files = await walkMarkdownFiles(root);
-  const ids = new Set();
+  const entries = new Map();
 
   for (const filePath of files) {
     const markdown = await readFile(filePath, "utf8").catch(() => "");
     const postId = markdown.match(/^post_id:\s*"?([^"\n]+)"?/m)?.[1]?.trim();
 
     if (postId) {
-      ids.add(postId);
+      entries.set(postId, filePath);
     }
   }
 
-  return ids;
+  return entries;
 }
 
 function buildMarkdown({ platform, config, account, post }) {
@@ -823,6 +823,7 @@ async function main() {
   const url = args.url || account?.url;
   const limit = Math.max(1, Math.min(Number(args.limit || 3), 10));
   const since = args.since ? new Date(`${args.since}T00:00:00`) : null;
+  const force = Boolean(args.force);
   const outputRoot = path.resolve(args.out || settings?.obsidianRootFolder || env.SNS_READER_OBSIDIAN_FOLDER || DEFAULT_MARKDOWN_ROOT);
 
   if (!url || !config.urlPattern.test(url)) {
@@ -893,16 +894,26 @@ async function main() {
       return;
     }
 
-    const existingPostIds = await readExistingPostIds(path.join(outputRoot, config.outputFolder));
+    const existingPostEntries = await readExistingPostEntries(path.join(outputRoot, config.outputFolder));
     const written = [];
     let skippedDuplicates = 0;
+    let refreshed = 0;
 
     for (const post of extractedPosts) {
       const built = buildMarkdown({ platform, config, account, post });
+      const existingPath = existingPostEntries.get(built.postId);
 
-      if (existingPostIds.has(built.postId)) {
-        skippedDuplicates += 1;
-        continue;
+      if (existingPath) {
+        // --force is only set for the small "lookback" window at the front of an Update run
+        // (see updateScriptForAccount), so this only re-writes the handful of most recent posts
+        // - not the whole history - letting an edited caption/body get picked up.
+        if (!force) {
+          skippedDuplicates += 1;
+          continue;
+        }
+
+        await rm(existingPath, { force: true });
+        refreshed += 1;
       }
 
       const stem = `${built.parts.fileDate}_${platform}-browser_${slugify(post.body.slice(0, 36)) || built.postId}`;
@@ -911,7 +922,7 @@ async function main() {
 
       await mkdir(monthDir, { recursive: true });
       await writeFile(mdPath, built.markdown, "utf8");
-      existingPostIds.add(built.postId);
+      existingPostEntries.set(built.postId, mdPath);
       written.push(mdPath);
     }
 
@@ -919,6 +930,7 @@ async function main() {
     console.log(`Capture source: ${captureSource}`);
     console.log(`Extracted posts: ${extractedPosts.length}`);
     console.log(`Written Markdown files: ${written.length}`);
+    console.log(`Refreshed existing posts: ${refreshed}`);
     console.log(`Skipped duplicate posts: ${skippedDuplicates}`);
     written.forEach((filePath) => console.log(filePath));
   } finally {

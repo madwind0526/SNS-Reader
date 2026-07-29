@@ -106,6 +106,7 @@ export const defaultSettings: AppSettings = {
   selectedLlmProvider: "openai-frontier",
   maxTags: 10,
   summaryLines: 2,
+  snsUpdateLookbackDays: 3,
   accounts: [
     {
       id: "sample-facebook",
