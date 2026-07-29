@@ -117,14 +117,6 @@ p {
   animation: intro-screen-fade-in 0.3s ease;
 }
 
-.intro-screen video {
-  max-width: min(1440px, 92vw);
-  max-height: 90vh;
-  object-fit: contain;
-  border-radius: 12px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
-}
-
 .intro-screen .intro-logo {
   max-width: min(720px, 86vw);
   max-height: 80vh;

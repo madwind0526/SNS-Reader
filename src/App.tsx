@@ -1733,31 +1733,16 @@ function PlatformSidebar({
   );
 }
 
-type IntroPhase = "video" | "logo";
-
 function IntroScreen({ onFinished }: { onFinished: () => void }) {
-  // /Intro.mp4 plays first (its own natural length, via onEnded); once it ends (or fails to
-  // load at all) the logo image fades in from low to full opacity and holds briefly before the
-  // whole screen is dismissed.
-  const [phase, setPhase] = useState<IntroPhase>("video");
-  const showLogo = useCallback(() => setPhase("logo"), []);
-
   useEffect(() => {
-    if (phase !== "logo") {
-      return;
-    }
-
     const timeoutId = window.setTimeout(onFinished, INTRO_SCREEN_DURATION_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [phase, onFinished]);
+  }, [onFinished]);
 
   return (
     <div className="intro-screen" role="presentation">
-      {phase === "video" && (
-        <video autoPlay muted onEnded={showLogo} onError={showLogo} playsInline src="/Intro.mp4" />
-      )}
-      {phase === "logo" && <img alt="SNS Reader" className="intro-logo" onError={onFinished} src="/Intro.png" />}
+      <img alt="SNS Reader" className="intro-logo" onError={onFinished} src="/Intro.png" />
     </div>
   );
 }
