@@ -494,7 +494,7 @@ async function capturePlaywrightPage({ env, args, platform, url, limit }) {
   }
 }
 
-function extensionFromUrl(url) {
+export function extensionFromUrl(url) {
   try {
     const extension = path.extname(new URL(url).pathname).toLowerCase();
 
@@ -509,14 +509,14 @@ function extensionFromUrl(url) {
 // with no real photo - come from a different bucket ("/t51.82787-19/"). Requiring the former
 // (rather than just excluding the latter) avoids also picking up unrelated small thumbnails
 // (suggested posts, reaction avatars) that show up elsewhere on these pages.
-function isRealContentImageUrl(url) {
+export function isRealContentImageUrl(url) {
   return typeof url === "string" && url.includes("/t51.82787-15/");
 }
 
 // These CDN URLs are meant to be fetched by link-preview crawlers (Facebook's own bot, Slack,
 // etc.) with no login, so a plain fetch works - no need to keep the Playwright browser context
 // (and its cookies) alive just to download images after the capture pass has already finished.
-async function downloadPostImages(imageUrls, mediaDir) {
+export async function downloadPostImages(imageUrls, mediaDir) {
   await mkdir(mediaDir, { recursive: true });
 
   const copied = [];
@@ -552,7 +552,7 @@ async function downloadPostImages(imageUrls, mediaDir) {
 // it uses to generate its own link previews for Messenger/WhatsApp/etc. - needs no login at all
 // and reliably returns a real og:image for a public post with a photo, and none at all for a
 // text-only post (no ambiguous fallback image to filter out, unlike Instagram/Threads).
-async function fetchFacebookOgImage(permalinkUrl) {
+export async function fetchFacebookOgImage(permalinkUrl) {
   try {
     const response = await fetch(permalinkUrl, {
       headers: { "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" },
