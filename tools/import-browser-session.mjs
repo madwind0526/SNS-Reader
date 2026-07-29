@@ -544,6 +544,50 @@ async function downloadPostImages(imageUrls, mediaDir) {
   return copied;
 }
 
+// A logged-in browser session gets empty og:* meta tags on a Facebook post permalink, and
+// navigating there directly renders the general feed around the post rather than a focused
+// single-post view - scraping any <img> found that way turned out to pick up unrelated
+// suggested-content thumbnails, not the post's own photo (confirmed by inspecting a downloaded
+// file). Requesting the exact same permalink with Facebook's own crawler user-agent - the one
+// it uses to generate its own link previews for Messenger/WhatsApp/etc. - needs no login at all
+// and reliably returns a real og:image for a public post with a photo, and none at all for a
+// text-only post (no ambiguous fallback image to filter out, unlike Instagram/Threads).
+async function fetchFacebookOgImage(permalinkUrl) {
+  try {
+    const response = await fetch(permalinkUrl, {
+      headers: { "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)" },
+    });
+
+    if (!response.ok) {
+      return "";
+    }
+
+    const html = await response.text();
+    const match = html.match(/<meta property="og:image" content="([^"]+)"/);
+
+    return match ? match[1].replaceAll("&amp;", "&") : "";
+  } catch (error) {
+    console.warn(`Facebook og:image fetch failed for ${permalinkUrl}: ${error instanceof Error ? error.message : "unknown error"}`);
+    return "";
+  }
+}
+
+async function attachFacebookImages(posts) {
+  for (const post of posts) {
+    if (!post.permalink) {
+      continue;
+    }
+
+    const imageUrl = await fetchFacebookOgImage(post.permalink);
+
+    if (imageUrl) {
+      post.imageUrls = [imageUrl];
+    }
+  }
+
+  return posts;
+}
+
 // Instagram's profile grid renders only thumbnail images - post captions don't exist anywhere
 // in the profile page's text at all, so scraping document.body.innerText (like the other
 // platforms) can never find real post content. Each individual post page does carry the caption
@@ -908,13 +952,10 @@ async function main() {
         account,
         limit,
       }).filter(sinceFilter);
-      // Facebook posts do not get imageUrls populated: navigating directly to a post permalink
-      // renders Facebook's general feed around it (with unrelated suggested-content thumbnails)
-      // rather than a focused single-post view, so scraping the first content-bucket <img> there
-      // picks up a essentially random unrelated image, not the post's own photo. Unlike
-      // Instagram/Threads, Facebook's og:* meta tags are also empty for a logged-in session, so
-      // there is no reliable per-post image source here without a real UI to inspect the actual
-      // rendered post ourselves - left as a known gap rather than shipping wrong images.
+
+      if (platform === "facebook") {
+        extractedPosts = await attachFacebookImages(extractedPosts);
+      }
     }
 
     if (extractedPosts.length === 0) {
