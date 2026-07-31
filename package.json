@@ -6,6 +6,7 @@
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "start": "node tools/start-app.mjs",
     "build": "tsc -b && vite build && tsc -p tsconfig.node.json",
     "import:facebook": "node tools/import-facebook.mjs && node tools/dedupe-sns-markdown.mjs --apply --platform facebook && node tools/validate-sns-markdown.mjs",
     "import:facebook-export": "node tools/import-facebook-export.mjs && node tools/dedupe-sns-markdown.mjs --apply --platform facebook && node tools/validate-sns-markdown.mjs",

@@ -4575,7 +4575,11 @@ export default defineConfig(() => {
     publicDir: path.resolve(process.cwd(), "assets"),
     server: {
       host: "127.0.0.1",
-      port: 5173
+      port: 5173,
+      // The whole app (Electron main.ts, docs, tools/start-app.mjs) hardcodes 5173 - failing
+      // fast here beats Vite silently drifting to 5174+ and leaving the Electron window pointed
+      // at a dead port.
+      strictPort: true
     }
   };
 });

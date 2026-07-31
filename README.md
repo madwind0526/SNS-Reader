@@ -17,12 +17,22 @@ SNS Reader는 Facebook, Instagram, X, Naver Blog 같은 SNS/블로그 글을 읽
 
 ## 실행
 
+Windows 앱(Electron 창)으로 바로 실행:
+
 ```bash
 npm install
+npm start
+```
+
+`npm start`는 Electron 메인 프로세스를 빌드하고, Vite 개발 서버를 띄운 뒤, 그 서버에 연결된 Electron 창을 자동으로 엽니다 (`tools/start-app.mjs`).
+
+브라우저에서만 UI를 확인하려면:
+
+```bash
 npm run dev
 ```
 
-브라우저에서 Vite 개발 서버를 열어 UI를 확인할 수 있습니다. Electron 앱 실행 스크립트는 다음 구현 단계에서 dev server와 연결해 확장합니다.
+으로 Vite 개발 서버만 띄우고 `http://127.0.0.1:5173`을 열면 됩니다.
 
 ## 주요 문서
 
