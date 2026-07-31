@@ -553,8 +553,6 @@ function detectPlatformFromArchiveName(fileName: string): SnsPlatform | null {
   return null;
 }
 
-const INTRO_SCREEN_DURATION_MS = 2200;
-
 export function App() {
   const [showIntro, setShowIntro] = useState(true);
   const hideIntro = useCallback(() => setShowIntro(false), []);
@@ -1734,14 +1732,16 @@ function PlatformSidebar({
 }
 
 function IntroScreen({ onFinished }: { onFinished: () => void }) {
+  // Holds indefinitely once the logo has faded in - any click or key press dismisses it, instead
+  // of the earlier fixed-duration auto-dismiss timer.
   useEffect(() => {
-    const timeoutId = window.setTimeout(onFinished, INTRO_SCREEN_DURATION_MS);
+    window.addEventListener("keydown", onFinished);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => window.removeEventListener("keydown", onFinished);
   }, [onFinished]);
 
   return (
-    <div className="intro-screen" role="presentation">
+    <div className="intro-screen" onClick={onFinished} role="presentation">
       <img alt="SNS Reader" className="intro-logo" onError={onFinished} src="/Intro.png" />
     </div>
   );
@@ -1770,7 +1770,17 @@ function TopToolbar({
 }) {
   return (
     <header className="top-toolbar">
-      <button className="app-title" onClick={onTitleClick} type="button">
+      <button
+        className="app-title"
+        onClick={(event) => {
+          // Keeping focus on this button would make a Space/Enter press meant to dismiss the
+          // replayed intro screen re-trigger this button's own native activate-on-key behavior
+          // instead, reopening it right after it closed.
+          event.currentTarget.blur();
+          onTitleClick();
+        }}
+        type="button"
+      >
         <strong>SNS Reader</strong>
         <span>{BUILD_VERSION}</span>
       </button>

@@ -115,6 +115,7 @@ p {
   place-items: center;
   background: #ffffff;
   animation: intro-screen-fade-in 0.3s ease;
+  cursor: pointer;
 }
 
 .intro-screen .intro-logo {
