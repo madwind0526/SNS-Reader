@@ -16,7 +16,7 @@ SNS Reader는 PC에서 실행되는 로컬 앱으로, 사용자가 지정한 SNS
 - Markdown: frontmatter + body markdown
 - PDF: `pdfkit` 기반 직접 렌더링 (`vite.config.mts` dev API 안에서 생성)
 
-## 실제 모듈 경계 (2026-07-26 기준)
+## 실제 모듈 경계 (2026-07-31 기준)
 
 원래 계획했던 `src/services/{collectors,obsidian,pdf,settings}` 분리 대신, 실제 구현은 아래 경계로 자리 잡았다.
 
@@ -41,6 +41,8 @@ SNS마다 인증과 접근 정책이 다르므로 플랫폼별 collector를 분�
 - 로그인 필요 계정: 사용자가 명시적으로 로그인 정보를 입력한 경우만 처리
 - 비밀번호: 앱 설정 파일에 직접 저장하지 않고 OS 보안 저장소 사용
 - 플랫폼 정책: 공식 API 또는 사용 가능한 export/archive 데이터 우선 검토
+- 증분 업데이트("SNS Update")는 마지막으로 저장된 글의 발행일만 기준으로 하면 이미 저장된 글이 나중에 수정(이미지 추가 등)되어도 감지할 수 없으므로, 설정 가능한 며칠(`snsUpdateLookbackDays`, 기본 3일) 앞선 날짜부터 다시 확인하고 그 범위 안의 글은 이미 있어도 강제로 갱신한다
+- 게시물 이미지는 플랫폼 웹페이지를 직접 파싱하는 대신, 링크 미리보기용 메타데이터(og:image 등)를 우선 사용한다 — 페이지 UI 변경에 훨씬 덜 취약하다
 
 ## Obsidian 저장 폴더 정책
 

@@ -27,6 +27,8 @@
 - Facebook, Instagram, Threads: 공식 export(JSON/zip) 및 로그인 브라우저 세션 수집 모두 구현
 - YouTube: Takeout 커뮤니티 게시물 + 커뮤니티 업데이트 수집 추가 (원 로드맵에는 없던 범위)
 - 로그인 필요 플로우: Playwright 지속 프로필(`data/runtime/browser-profile`) 기반 로그인 브라우저 + CDP 폴백
+- 2026-07-31 확장 (신뢰성 정비): Facebook/Threads 상대 시간("1일" 등) 파싱 누락으로 최근 글이 통째로 스킵되던 버그 수정, Instagram/Threads/Facebook 실제 사진 다운로드 구현(og:image + efg 태그 기반 진짜 사진 판별, Facebook은 크롤러 User-Agent 경로 사용), Threads 글자 수 제한으로 나뉜 본문+답글 자동 병합, Facebook 게시물 ID를 날짜 대신 permalink 기반으로 바꿔 재실행 시 중복 생성 방지, SNS Update에 설정 가능한 lookback 기간(기본 3일) 추가로 최근 글 수정사항도 재확인
+- 2026-07-31 확장 (앱 안정성/성능/보안, 원 로드맵에 없던 범위): `/api/*` 엔드포인트 CSRF 방어 및 아카이브 임포트 경로 순회 방지, PDF 생성 실패 시 손상 파일 정리, SNS 수집/업데이트 파이프라인 동시 실행 방지 락, 카드 목록 가상화(virtualization) 및 목록/상세 API 페이로드 분리, 앱 첫 로드 시 인트로 화면(`assets/Intro.png`) 추가
 
 ## Wave 5: PDF Export MVP — 완료 (원래 범위보다 확장)
 
@@ -46,4 +48,4 @@
 
 ---
 
-*2026-07-26 기준. `memory-bank/STATE.md`의 Wave 번호는 세션 단위 작업 배치를 추적하는 별도 카운터이며, 위 로드맵 Wave 번호(제품 마일스톤)와 다르다.*
+*2026-07-31 기준. `memory-bank/STATE.md`의 Wave 번호는 세션 단위 작업 배치를 추적하는 별도 카운터이며, 위 로드맵 Wave 번호(제품 마일스톤)와 다르다.*

@@ -1,8 +1,9 @@
 # Active Context
 
-- Current Obsidian SNS root is `F:\Obsidian\PC-Madwind\SNS`; X archive import added 838 original tweets only, excluding 219 replies and 7 retweets.
-- Active Markdown validation passes after X import; X summaries/TAG enrichment is not yet run.
-- Wave 15 (Mesh View crash fix + light-mode visibility + PDF maker polish) is flushed; docs and `package.json` version realigned to actual progress on 2026-07-26.
-- Uncommitted change in `vite.config.mts` (134 insertions / 96 deletions) is still pending review/commit.
-- `tmp/` (PDF render/cover test artifacts, one corrupted `App.tsx` backup) is untracked and not in `.gitignore` — needs cleanup or a gitignore entry.
-- Next likely focus: verify app UI reload reflects newly enriched TAGs/Mesh data, then start Wave 6 "Packaging" work (Windows installer via electron-builder, settings migration, error/recovery screen) since collectors, Obsidian export, and PDF export are all functionally complete.
+- Intro splash screen shipped (`assets/Intro.png`, fade-in-and-hold, replayable via the "SNS Reader" title click); the earlier video-intro variant (`Intro.mp4`) was tried and then explicitly removed per user request.
+- Facebook/Instagram/Threads "SNS Update" pipeline had multiple correctness bugs found and fixed this session: relative-time date parsing missed same-day posts, image capture was either missing entirely (Facebook) or used an unreliable CDN-bucket heuristic (Instagram/Threads), Facebook's date-derived post IDs caused duplicate files across reruns (now permalink-derived), and Threads self-reply continuations (split due to its character limit) are now merged into their parent post instead of appearing as separate imageless cards.
+- Added a configurable `snsUpdateLookbackDays` setting (Settings > SNS Update) so Update rescans (and force-refreshes) the last N days instead of only the exact last-known-post date, catching edits like an image added to a recently-posted entry.
+- Performance/stability/security hardening pass completed on `vite.config.mts` + `src/App.tsx`: CSRF guard on all `/api/*` mutating endpoints, path-traversal fix in archive importers, PDF-generation corrupt-file cleanup, vault-mutating pipeline concurrency lock, card-grid virtualization (custom windowing, no library), list/detail Markdown payload split.
+- Known gap, not yet addressed: older Facebook posts imported via the archive-export path (`import-meta-export.mjs`/`import-facebook-export.mjs`) have no per-post permalink stored, so the image-backfill script added this session can't reach them; Instagram's archive-imported posts (numbered filenames) haven't been checked for missing images either.
+- `code-review-cline.md` (untracked, not for git) and `progress.md` (untracked, written this session as a cross-project reference on the virtualization/payload-split patterns) are intentionally not committed unless asked.
+- Next likely focus: Wave 6 Packaging (Windows installer via electron-builder) remains the largest unstarted product milestone — everything else scoped so far (collectors, Obsidian export, PDF export, Mesh View, reliability hardening) is functionally complete.
