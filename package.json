@@ -3,7 +3,7 @@
   "version": "0.7.0",
   "private": true,
   "description": "PC app for converting SNS posts into Obsidian Markdown databases and PDF books.",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build && tsc -p tsconfig.node.json",
