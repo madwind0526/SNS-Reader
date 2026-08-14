@@ -11,6 +11,9 @@ const IMAGE_COUNT_TEXT = "\uC7A5";
 const COMMENT_COUNT_TEXT = "\uB313\uAE00";
 const MONTH_TEXT = "\uC6D4";
 const DAY_TEXT = "\uC77C";
+const SHARED_POST_TEXT = "\uACF5\uC720 \uAC8C\uC2DC\uBB3C";
+const NO_PHOTO_DESCRIPTION_TEXT = "\uC0AC\uC9C4 \uC124\uBA85\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.";
+const ALT_TEXT_CAPTION_PATTERN = /\uBB38\uAD6C:.*\uC758 (\uC774\uBBF8\uC9C0|\uADF8\uB798\uD53D|\uC544\uD2B8)\uC77C \uC218 \uC788\uC74C\.?$/m;
 
 function parseEnv(content) {
   return Object.fromEntries(
@@ -101,7 +104,10 @@ function hasFacebookFooterInBody(value) {
   return (
     new RegExp(`^${REACTIONS_TEXT}$`, "m").test(text) ||
     new RegExp(`^\\+\\d+${IMAGE_COUNT_TEXT}$`, "m").test(text) ||
-    new RegExp(`^${COMMENT_COUNT_TEXT}\\s+\\d+\\s*\\uAC1C$`, "m").test(text)
+    new RegExp(`^${COMMENT_COUNT_TEXT}\\s+[\\d,]+\\s*\\uAC1C$`, "m").test(text) ||
+    new RegExp(`^${SHARED_POST_TEXT}$`, "m").test(text) ||
+    new RegExp(`^${NO_PHOTO_DESCRIPTION_TEXT}$`, "m").test(text) ||
+    ALT_TEXT_CAPTION_PATTERN.test(text)
   );
 }
 

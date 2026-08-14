@@ -9,6 +9,9 @@ const COMMENT_TEXT = "\uB313\uAE00";
 const MONTH_TEXT = "\uC6D4";
 const DAY_TEXT = "\uC77C";
 const IMAGE_COUNT_TEXT = "\uC7A5";
+const SHARED_POST_TEXT = "\uACF5\uC720 \uAC8C\uC2DC\uBB3C";
+const NO_PHOTO_DESCRIPTION_TEXT = "\uC0AC\uC9C4 \uC124\uBA85\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.";
+const ALT_TEXT_CAPTION_PATTERN = /\uBB38\uAD6C:.*\uC758 (\uC774\uBBF8\uC9C0|\uADF8\uB798\uD53D|\uC544\uD2B8)\uC77C \uC218 \uC788\uC74C\.?$/;
 
 export function normalizeFacebookLines(value) {
   return String(value || "")
@@ -30,7 +33,9 @@ export function stripFacebookUiFromBody(value) {
     .replace(new RegExp(`\\s*${SEE_MORE_TEXT}`, "g"), "")
     .replace(/\d+:\d+\s*\/\s*\d+:\d+/g, "")
     .replace(new RegExp(`${REACTIONS_TEXT}\\s*\\d+[\\s\\S]*$`, "g"), "")
-    .replace(new RegExp(`${COMMENT_TEXT}\\s*\\d+\\s*\\uAC1C[\\s\\S]*$`, "g"), "")
+    .replace(new RegExp(`${COMMENT_TEXT}\\s*[\\d,]+\\s*\\uAC1C[\\s\\S]*$`, "g"), "")
+    .replace(new RegExp(`\\s*${SHARED_POST_TEXT}\\s*$`), "")
+    .replace(new RegExp(`\\s*${NO_PHOTO_DESCRIPTION_TEXT}\\s*$`), "")
     .trim();
 }
 
@@ -53,8 +58,11 @@ export function extractFacebookPostBodyFromPageText(pageText, authorName = AUTHO
       (new RegExp(`^\\+\\d+${IMAGE_COUNT_TEXT}$`).test(line) ||
         line === INSIGHTS_TEXT ||
         line === REACTIONS_TEXT ||
-        new RegExp(`^${COMMENT_TEXT}\\s+\\d+\\s*\\uAC1C$`).test(line) ||
-        line === LIKE_TEXT)
+        new RegExp(`^${COMMENT_TEXT}\\s+[\\d,]+\\s*\\uAC1C$`).test(line) ||
+        line === LIKE_TEXT ||
+        line === SHARED_POST_TEXT ||
+        line === NO_PHOTO_DESCRIPTION_TEXT ||
+        ALT_TEXT_CAPTION_PATTERN.test(line))
   );
 
   if (end < 0) {
