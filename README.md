@@ -34,6 +34,8 @@ npm run dev
 
 으로 Vite 개발 서버만 띄우고 `http://127.0.0.1:5173`을 열면 됩니다.
 
+Windows에서는 `start.bat`을 더블클릭해도 됩니다 (5173 포트를 쓰는 기존 프로세스를 먼저 정리한 뒤 `npm start` 실행). 종료는 `stop.bat`으로.
+
 ## 주요 문서
 
 - `docs/folder-structure.md`
