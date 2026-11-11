@@ -10,4 +10,5 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":5173" ^| findstr "LISTENING
 )
 
 echo Starting SNS Reader...
+start "" /min C:\Claude\open-url.bat http://127.0.0.1:5173
 call npm start

@@ -1,6 +1,6 @@
 # SNS Reader Project Instructions
 
-이 파일은 `C:\Claude\SNS-Reader` 프로젝트 전용 작업 기준입니다.
+이 파일은 `G:\Claude\SNS-Reader` 프로젝트 전용 작업 기준입니다.
 
 ## Project Summary
 
